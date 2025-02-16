@@ -82,6 +82,41 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
         // TODO: call_indirect
 
         //--------------------------------------------------------------------------------------------------------------
+        // Parametric instructions
+        //--------------------------------------------------------------------------------------------------------------
+
+        case 0x1B: {
+            CHECK(arrlen(ctx->stack) >= 3);
+            jit_value_t condition = arrpop(ctx->stack);
+            jit_value_t val2 = arrpop(ctx->stack);
+            jit_value_t val1 = arrpop(ctx->stack);
+
+            CHECK(condition.kind == WASM_I32);
+            CHECK(val2.kind == val1.kind);
+
+            // choose the type
+            spidir_value_type_t spidir_type;
+            switch (val1.kind) {
+                case WASM_I32: spidir_type = SPIDIR_TYPE_I32; break;
+                case WASM_I64: spidir_type = SPIDIR_TYPE_I64; break;
+                default: CHECK_FAIL();
+            }
+
+            // prepare the next block
+            spidir_block_t next_block = spidir_builder_create_block(builder);
+
+            // we are going to use a brcond, if its zero it will take val1 and if its
+            // non-zero it will take val2
+            spidir_value_t values[] = { val1.value, val2.value };
+            spidir_builder_build_brcond(builder, condition.value, next_block, next_block);
+
+            // setup the continuation
+            spidir_builder_set_block(builder, next_block);
+            val1.value = spidir_builder_build_phi(builder, spidir_type, 2, values, NULL);
+            arrpush(ctx->stack, val1);
+        } break;
+
+        //--------------------------------------------------------------------------------------------------------------
         // variable instructions
         //--------------------------------------------------------------------------------------------------------------
 
