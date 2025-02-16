@@ -120,13 +120,16 @@ void wasm_host_log(wasm_host_log_level_t log_level, const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
     switch (log_level) {
+        case WASM_HOST_LOG_RAW: break;
         case WASM_HOST_LOG_DEBUG: printf("[?] "); break;
         case WASM_HOST_LOG_TRACE: printf("[*] "); break;
         case WASM_HOST_LOG_WARN: printf("[!] "); break;
         case WASM_HOST_LOG_ERROR: printf("[-] "); break;
     }
     vprintf(fmt, args);
-    printf("\n");
+    if (log_level != WASM_HOST_LOG_RAW) {
+        printf("\n");
+    }
     va_end(args);
 }
 

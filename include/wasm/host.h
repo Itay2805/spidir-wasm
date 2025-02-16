@@ -2,8 +2,10 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <spidir/module.h>
 
 typedef enum wasm_host_log_level {
+    WASM_HOST_LOG_RAW,
     WASM_HOST_LOG_DEBUG,
     WASM_HOST_LOG_TRACE,
     WASM_HOST_LOG_WARN,

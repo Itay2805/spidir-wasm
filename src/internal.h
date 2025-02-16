@@ -94,3 +94,8 @@ typedef enum wasm_section_id : uint8_t {
     WASM_DATA_SECTION = 11,
     WASM_DATA_COUNT_SECTION = 12,
 } wasm_section_id_t;
+
+/**
+ * Helper function to parse a valtype
+ */
+wasm_valtype_t* wasm_parse_valtype(uint8_t valtype);

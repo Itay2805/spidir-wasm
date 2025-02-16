@@ -1,4 +1,5 @@
 #include <binary_reader.h>
+#include <jit.h>
 #include <stb_ds.h>
 #include <stb_ds.h>
 #include <stdlib.h>
@@ -32,7 +33,7 @@ cleanup:
     return err;
 }
 
-static wasm_valtype_t* wasm_parse_valtype(uint8_t valtype) {
+wasm_valtype_t* wasm_parse_valtype(uint8_t valtype) {
     switch (valtype) {
         case 0x7F: return wasm_valtype_new_i32();
         case 0x7E: return wasm_valtype_new_i64();
@@ -162,6 +163,9 @@ static wasm_err_t wasm_module_parse_function_section(
             arrlen(arg_types),
             arg_types
         );
+
+        // fill the function type
+        func->functype = func_type;
 
         arrfree(arg_types);
     }
@@ -312,7 +316,11 @@ cleanup:
     return err;
 }
 
-static wasm_err_t wasm_module_parse_code_section(wasm_module_t* module, binary_reader_t* reader) {
+static wasm_err_t wasm_module_parse_code_section(
+    spidir_module_handle_t spidir_module,
+    wasm_module_t* module,
+    binary_reader_t* reader
+) {
     wasm_err_t err = WASM_NO_ERROR;
 
     CHECK(module->functions != NULL);
@@ -322,18 +330,28 @@ static wasm_err_t wasm_module_parse_code_section(wasm_module_t* module, binary_r
 
     for (int64_t i = 0; i < functions_count; i++) {
         // create an empty functype
-        // wasm_func_t* func = module->functions[i];
+        wasm_func_t* func = module->functions[i];
 
         uint32_t code_size = BINARY_READER_PULL_U32(reader);
         void* code = BINARY_READER_PULL(reader, code_size);
 
-        // TODO: jit it from here
-        (void)code;
+        // jit the function
+        binary_reader_t code_reader = {
+            .ptr = code,
+            .size = code_size,
+        };
+        RETHROW(wasm_jit_function(spidir_module, module, func, &code_reader));
     }
 
 cleanup:
     return err;
 }
+
+static spidir_dump_status_t wasm_spidir_dump_callback(const char* data, size_t size, void* ctx) {
+    wasm_host_log(WASM_HOST_LOG_RAW, "%.*s", size, data);
+    return SPIDIR_DUMP_CONTINUE;
+}
+
 
 WASM_API_EXTERN wasm_module_t* wasm_module_deserialize(wasm_store_t* store, const wasm_byte_vec_t* binary) {
     wasm_err_t err = WASM_NO_ERROR;
@@ -378,10 +396,13 @@ WASM_API_EXTERN wasm_module_t* wasm_module_deserialize(wasm_store_t* store, cons
             case WASM_MEMORY_SECTION: RETHROW(wasm_module_parse_memory_section(module, &section_reader)); break;
             case WASM_GLOBAL_SECTION: RETHROW(wasm_module_parse_global_section(module, &section_reader)); break;
             case WASM_EXPORT_SECTION: RETHROW(wasm_module_parse_export_section(module, &section_reader)); break;
-            case WASM_CODE_SECTION: RETHROW(wasm_module_parse_code_section(module, &section_reader)); break;
+            case WASM_CODE_SECTION: RETHROW(wasm_module_parse_code_section(spidir_module, module, &section_reader)); break;
             default: CHECK_FAIL("Unknown section id %d", section_id);
         }
     }
+
+    // dump for fun
+    spidir_module_dump(spidir_module, wasm_spidir_dump_callback, NULL);
 
 cleanup:
     if (IS_ERROR(err)) {
