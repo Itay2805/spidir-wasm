@@ -43,7 +43,7 @@ wasm_err_t binary_reader_pull_i64(binary_reader_t* reader, int64_t* out) {
     } while ((byte & 0x80) != 0);
 
     if ((shift < 64) && (byte & 0x40)) {
-        result |= (~0 << shift);
+        result |= (~0u << shift);
     }
 
     *out = result;

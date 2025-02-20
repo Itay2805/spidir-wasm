@@ -22,6 +22,30 @@ typedef struct jit_value {
     spidir_value_t value;
 } jit_value_t;
 
+typedef struct jit_label {
+    // the block of this label
+    spidir_block_t block;
+
+    // a phi for each of the locals, so whenever we jump to
+    // this block we can properly jump to it
+    spidir_phi_t* locals_phis;
+
+    // the phi values for the locals to be used in the block
+    jit_value_t* local_values;
+
+    // like locals but for the stack
+    spidir_phi_t* stack_phis;
+
+    // like locals but for the stack
+    jit_value_t* stack_values;
+
+    // the types of results we expect
+    wasm_valkind_t* result_types;
+
+    // did we terminate the block
+    bool block_terminated;
+} jit_label_t;
+
 typedef struct jit_context {
     // the current stack value
     jit_value_t* stack;
@@ -29,8 +53,14 @@ typedef struct jit_context {
     // the locals
     jit_value_t* locals;
 
+    // the stack of labels pushed into the stack
+    jit_label_t* labels;
+
     // the function we are jitting
     wasm_func_t* function;
+
+    // the module we are jitting from
+    wasm_module_t* module;
 } jit_context_t;
 
 #define SWAP(a, b) \
@@ -40,8 +70,106 @@ typedef struct jit_context {
         b = __tmp; \
     })
 
+static spidir_value_type_t wasm_valkind_to_spidir(wasm_valkind_t kind) {
+    switch (kind) {
+        // numeric types
+        case WASM_I32: return SPIDIR_TYPE_I32;
+        case WASM_I64: return SPIDIR_TYPE_I64;
+
+        // TODO: float
+
+        // reference types
+        case WASM_EXTERNREF:
+        case WASM_FUNCREF:
+            return SPIDIR_TYPE_PTR;
+    }
+    __builtin_unreachable();
+}
+
+static wasm_err_t wasm_init_and_verify_block_type(spidir_builder_handle_t builder, jit_context_t* ctx, binary_reader_t* code, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    CHECK(code->size >= 1);
+    uint8_t op = *(uint8_t*)code->ptr;
+    switch (op) {
+        // empty type
+        case 0x40: BINARY_READER_PULL_BYTE(code); break;
+
+        // inline result type
+        case 0x7F: BINARY_READER_PULL_BYTE(code); arrpush(label->result_types, WASM_I32); break;
+        case 0x7E: BINARY_READER_PULL_BYTE(code); arrpush(label->result_types, WASM_I64); break;
+        case 0x7D: BINARY_READER_PULL_BYTE(code); arrpush(label->result_types, WASM_F32); break;
+        case 0x7C: BINARY_READER_PULL_BYTE(code); arrpush(label->result_types, WASM_F64); break;
+        case 0x70: BINARY_READER_PULL_BYTE(code); arrpush(label->result_types, WASM_FUNCREF); break;
+        case 0x6F: BINARY_READER_PULL_BYTE(code); arrpush(label->result_types, WASM_EXTERNREF); break;
+
+        // func type
+        default: {
+            int64_t index = BINARY_READER_PULL_I64(code);
+            CHECK(index >= 0);
+            CHECK(index < ctx->module->typefuncs.size);
+            wasm_functype_t* functype = ctx->module->typefuncs.data[index];
+
+            // validate the stack types
+            CHECK(arrlen(ctx->stack) >= functype->params.size);
+            for (int i = 0; i < functype->params.size; i++) {
+                CHECK(ctx->stack[arrlen(ctx->stack) - i - 1].kind == functype->params.data[i]->kind);
+            }
+
+            // add the result types so we can validate branch into this
+            for (int i = 0; i < functype->params.size; i++) {
+                arrpush(label->result_types, functype->params.data[i]->kind);
+            }
+        } break;
+    }
+
+    // create the end label, and create phis inside of it
+    label->block = spidir_builder_create_block(builder);
+    spidir_block_t current;
+    CHECK(spidir_builder_cur_block(builder, &current));
+    spidir_builder_set_block(builder, label->block);
+
+    // create the phis for the locals
+    arrsetlen(label->local_values, arrlen(ctx->locals));
+    arrsetlen(label->locals_phis, arrlen(ctx->locals));
+    for (int i = 0; i < arrlen(ctx->locals); i++) {
+        label->local_values[i].kind = ctx->locals[i].kind;
+        label->local_values[i].value = spidir_builder_build_phi(
+            builder,
+            wasm_valkind_to_spidir(ctx->locals[i].kind),
+            0, NULL,
+            &label->locals_phis[i]
+        );
+    }
+
+    // TODO: result types
+    for (int i = 0; i < arrlen(label->result_types); i++) {
+        CHECK_FAIL();
+    }
+
+    spidir_builder_set_block(builder, current);
+
+cleanup:
+    return err;
+}
+
+static wasm_err_t wasm_prepare_branch(spidir_builder_handle_t builder, jit_context_t* ctx, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    // add the phi inputs to everything
+    for (int i = 0; i < arrlen(ctx->locals); i++) {
+        spidir_builder_add_phi_input(builder, label->locals_phis[i], ctx->locals[i].value);
+    }
+
+    // TODO: add stack inputs
+
+cleanup:
+    return err;
+}
+
 static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t* ctx, uint8_t instr, binary_reader_t* code) {
     wasm_err_t err = WASM_NO_ERROR;
+    spidir_value_t* value_arr = NULL;
 
     switch (instr) {
         //--------------------------------------------------------------------------------------------------------------
@@ -55,12 +183,53 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
         case 0x01: // nop
             break;
 
-        // TODO: block
+        case 0x02: { // block
+            jit_label_t* label = arraddnptr(ctx->labels, 1);
+            __builtin_memset(label, 0, sizeof(*label));
+            RETHROW(wasm_init_and_verify_block_type(builder, ctx, code, label));
+        } break;
+
         // TODO: loop
         // TODO: if
         // TODO: if-else
         // TODO: br
-        // TODO: br-if
+
+        case 0x0C: // br
+        {
+            uint32_t label_index = BINARY_READER_PULL_U32(code);
+            jit_label_t* label = &ctx->labels[arrlen(ctx->labels) - label_index - 1];
+
+            // prepare the jump
+            RETHROW(wasm_prepare_branch(builder, ctx, label));
+
+            // build the branch
+            spidir_builder_build_branch(builder, label->block);
+
+            // we terminated the block
+            arrlast(ctx->labels).block_terminated = true;
+        } break;
+
+        case 0x0D: // br_if
+        {
+            uint32_t label_index = BINARY_READER_PULL_U32(code);
+            jit_label_t* label = &ctx->labels[arrlen(ctx->labels) - label_index - 1];
+
+            // prepare the jump
+            RETHROW(wasm_prepare_branch(builder, ctx, label));
+
+            // create the next location
+            spidir_block_t next = spidir_builder_create_block(builder);
+
+            // conditionally jump to the next location
+            CHECK(arrlen(ctx->stack) >= 1);
+            jit_value_t value = arrpop(ctx->stack);
+            CHECK(value.kind == WASM_I32);
+            spidir_builder_build_brcond(builder, value.value, label->block, next);
+
+            // switch the block we are in now
+            spidir_builder_set_block(builder, next);
+        } break;
+
         // TODO: br_table
 
         case 0x0F: // return
@@ -75,6 +244,11 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
                 spidir_builder_build_return(builder, value.value);
             } else {
                 spidir_builder_build_return(builder, SPIDIR_VALUE_INVALID);
+            }
+
+            // we terminated the block
+            if (arrlen(ctx->labels) >= 1) {
+                arrlast(ctx->labels).block_terminated = true;
             }
         } break;
 
@@ -341,6 +515,7 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
     }
 
 cleanup:
+    arrfree(value_arr);
     return err;
 }
 
@@ -350,8 +525,39 @@ static wasm_err_t wasm_jit_expr(spidir_builder_handle_t builder, jit_context_t* 
     // go over all the instructions until we read the end instruction
     for (;;) {
         uint8_t instr = BINARY_READER_PULL_BYTE(code);
-        if (instr == 0x0B) {
-            break;
+        if (instr == 0x0B) { // end
+            // the end instruction, in this case we need to switch
+            // to a different block
+            if (arrlen(ctx->labels) != 0) {
+                jit_label_t label = arrpop(ctx->labels);
+
+                // automatically fall into the block at this point
+                if (!label.block_terminated) {
+                    RETHROW(wasm_prepare_branch(builder, ctx, &label));
+                    spidir_builder_build_branch(builder, label.block);
+                }
+
+                // set that we are in the next block
+                spidir_builder_set_block(builder, label.block);
+
+                // free the unneeded phis
+                arrfree(label.locals_phis);
+                arrfree(label.stack_phis);
+
+                // free the previous locals and stack
+                arrfree(ctx->stack);
+                arrfree(ctx->locals);
+
+                // and use the new ones
+                // TODO: stack
+                ctx->locals = label.local_values;
+
+                // and continue to run new instructions
+                continue;
+            } else {
+                // no more labels, we are done
+                break;
+            }
         }
 
         // jit the isntruction
@@ -359,6 +565,14 @@ static wasm_err_t wasm_jit_expr(spidir_builder_handle_t builder, jit_context_t* 
     }
 
 cleanup:
+    for (int i = 0; i < arrlen(ctx->labels); i++) {
+        arrfree(ctx->labels[i].locals_phis);
+        arrfree(ctx->labels[i].local_values);
+        arrfree(ctx->labels[i].stack_phis);
+        arrfree(ctx->labels[i].stack_values);
+    }
+    arrfree(ctx->labels);
+
     return err;
 }
 
@@ -379,7 +593,8 @@ static void wasm_jit_build_callback(spidir_builder_handle_t builder, void* _ctx)
         if (i < ctx->function->functype->params.size) {
             jit_ctx.locals[i].value = spidir_builder_build_param_ref(builder, i);
         } else {
-            jit_ctx.locals[i].value = SPIDIR_VALUE_INVALID;
+            // TODO: maybe later do something
+            jit_ctx.locals[i].value = spidir_builder_build_iconst(builder, wasm_valkind_to_spidir(jit_ctx.locals[i].kind), 0);
         }
     }
 
@@ -400,6 +615,7 @@ static void wasm_jit_build_callback(spidir_builder_handle_t builder, void* _ctx)
 cleanup:
     arrfree(jit_ctx.stack);
     arrfree(jit_ctx.locals);
+    arrfree(jit_ctx.labels);
 
     ctx->err = err;
 }

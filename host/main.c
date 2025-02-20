@@ -6,6 +6,7 @@
 
 #include <wasm/wasm.h>
 #include <util/except.h>
+#include <spidir/log.h>
 
 typedef enum option_type {
     // options with short version
@@ -19,6 +20,21 @@ static struct option long_options[] = {
     { "module", required_argument, 0, OPTION_MODULE },
     { "dump-spidir", required_argument, 0, OPTION_DUMP_SPIDIR },
 };
+
+static const char* spidir_log_level_to_string(spidir_log_level_t level) {
+    switch (level) {
+        case SPIDIR_LOG_LEVEL_ERROR: return "ERROR";
+        case SPIDIR_LOG_LEVEL_WARN: return "WARN";
+        case SPIDIR_LOG_LEVEL_INFO: return "INFO";
+        case SPIDIR_LOG_LEVEL_DEBUG: return "DEBUG";
+        case SPIDIR_LOG_LEVEL_TRACE: return "TRACE";
+        default: return "LOG";
+    }
+}
+
+static void stdout_log_callback(spidir_log_level_t level, const char* module, size_t module_len, const char* message, size_t message_len) {
+    printf("[%s %.*s] %.*s\n", spidir_log_level_to_string(level), (int) module_len, module, (int) message_len, message);
+}
 
 int main(int argc, char** argv) {
     wasm_err_t err = WASM_NO_ERROR;
@@ -55,6 +71,9 @@ int main(int argc, char** argv) {
             } break;
         }
     }
+
+    spidir_log_init(stdout_log_callback);
+    spidir_log_set_max_level(SPIDIR_LOG_LEVEL_TRACE);
 
     // check we have the module path
     CHECK(module_path != NULL);

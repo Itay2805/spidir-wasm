@@ -6,6 +6,8 @@
 #include <util/except.h>
 #include <wasm/error.h>
 
+#include <spidir/opt.h>
+
 #include "internal.h"
 
 WASM_API_EXTERN wasm_module_t* wasm_module_new(wasm_store_t* store, const wasm_byte_vec_t* binary) {
@@ -400,6 +402,9 @@ WASM_API_EXTERN wasm_module_t* wasm_module_deserialize(wasm_store_t* store, cons
             default: CHECK_FAIL("Unknown section id %d", section_id);
         }
     }
+
+    // run the optimizer
+    spidir_opt_run(spidir_module);
 
     // dump for fun
     spidir_module_dump(spidir_module, wasm_spidir_dump_callback, NULL);

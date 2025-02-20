@@ -18,7 +18,7 @@ AR				:= llvm-ar
 LD				:= ld.lld
 
 # Should we compile in debug
-DEBUG			?= 0
+DEBUG			?= 1
 
 # Should we compile in debug or not
 SPIDIR_DEBUG	?= $(DEBUG)
