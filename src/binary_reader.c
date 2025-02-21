@@ -38,7 +38,7 @@ wasm_err_t binary_reader_pull_i64(binary_reader_t* reader, int64_t* out) {
     uint8_t byte;
     do {
         byte = BINARY_READER_PULL_BYTE(reader);
-        result |= (byte & 0x7F << shift);
+        result |= ((byte & 0x7F) << shift);
         shift += 7;
     } while ((byte & 0x80) != 0);
 

@@ -24,7 +24,7 @@ typedef struct jit_value {
 
 typedef struct jit_label {
     // the block of this label
-    spidir_block_t block;
+    spidir_block_t label_block;
 
     // a phi for each of the locals, so whenever we jump to
     // this block we can properly jump to it
@@ -32,15 +32,6 @@ typedef struct jit_label {
 
     // the phi values for the locals to be used in the block
     jit_value_t* local_values;
-
-    // like locals but for the stack
-    spidir_phi_t* stack_phis;
-
-    // like locals but for the stack
-    jit_value_t* stack_values;
-
-    // the types of results we expect
-    wasm_valkind_t* result_types;
 
     // did we terminate the block
     bool block_terminated;
@@ -86,7 +77,7 @@ static spidir_value_type_t wasm_valkind_to_spidir(wasm_valkind_t kind) {
     __builtin_unreachable();
 }
 
-static wasm_err_t wasm_init_and_verify_block_type(spidir_builder_handle_t builder, jit_context_t* ctx, binary_reader_t* code, jit_label_t* label) {
+static wasm_err_t wasm_create_label(spidir_builder_handle_t builder, jit_context_t* ctx, binary_reader_t* code, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
     CHECK(code->size >= 1);
@@ -95,39 +86,43 @@ static wasm_err_t wasm_init_and_verify_block_type(spidir_builder_handle_t builde
         // empty type
         case 0x40: BINARY_READER_PULL_BYTE(code); break;
 
-        // inline result type
-        case 0x7F: BINARY_READER_PULL_BYTE(code); arrpush(label->result_types, WASM_I32); break;
-        case 0x7E: BINARY_READER_PULL_BYTE(code); arrpush(label->result_types, WASM_I64); break;
-        case 0x7D: BINARY_READER_PULL_BYTE(code); arrpush(label->result_types, WASM_F32); break;
-        case 0x7C: BINARY_READER_PULL_BYTE(code); arrpush(label->result_types, WASM_F64); break;
-        case 0x70: BINARY_READER_PULL_BYTE(code); arrpush(label->result_types, WASM_FUNCREF); break;
-        case 0x6F: BINARY_READER_PULL_BYTE(code); arrpush(label->result_types, WASM_EXTERNREF); break;
+        // // inline result type
+        // case 0x7F: BINARY_READER_PULL_BYTE(code); arrpush(label->result_types, WASM_I32); break;
+        // case 0x7E: BINARY_READER_PULL_BYTE(code); arrpush(label->result_types, WASM_I64); break;
+        // case 0x7D: BINARY_READER_PULL_BYTE(code); arrpush(label->result_types, WASM_F32); break;
+        // case 0x7C: BINARY_READER_PULL_BYTE(code); arrpush(label->result_types, WASM_F64); break;
+        // case 0x70: BINARY_READER_PULL_BYTE(code); arrpush(label->result_types, WASM_FUNCREF); break;
+        // case 0x6F: BINARY_READER_PULL_BYTE(code); arrpush(label->result_types, WASM_EXTERNREF); break;
+        //
+        // // func type
+        // default: {
+        //     int64_t index = BINARY_READER_PULL_I64(code);
+        //     CHECK(index >= 0);
+        //     CHECK(index < ctx->module->typefuncs.size);
+        //     wasm_functype_t* functype = ctx->module->typefuncs.data[index];
+        //
+        //     // validate the stack types
+        //     CHECK(arrlen(ctx->stack) >= functype->params.size);
+        //     for (int i = 0; i < functype->params.size; i++) {
+        //         CHECK(ctx->stack[arrlen(ctx->stack) - i - 1].kind == functype->params.data[i]->kind);
+        //     }
+        //
+        //     // add the result types so we can validate branch into this
+        //     for (int i = 0; i < functype->params.size; i++) {
+        //         arrpush(label->result_types, functype->params.data[i]->kind);
+        //     }
+        // } break;
 
-        // func type
-        default: {
-            int64_t index = BINARY_READER_PULL_I64(code);
-            CHECK(index >= 0);
-            CHECK(index < ctx->module->typefuncs.size);
-            wasm_functype_t* functype = ctx->module->typefuncs.data[index];
-
-            // validate the stack types
-            CHECK(arrlen(ctx->stack) >= functype->params.size);
-            for (int i = 0; i < functype->params.size; i++) {
-                CHECK(ctx->stack[arrlen(ctx->stack) - i - 1].kind == functype->params.data[i]->kind);
-            }
-
-            // add the result types so we can validate branch into this
-            for (int i = 0; i < functype->params.size; i++) {
-                arrpush(label->result_types, functype->params.data[i]->kind);
-            }
-        } break;
+        // TODO: support block params
+        default:
+            CHECK_FAIL();
     }
 
     // create the end label, and create phis inside of it
-    label->block = spidir_builder_create_block(builder);
+    label->label_block = spidir_builder_create_block(builder);
     spidir_block_t current;
     CHECK(spidir_builder_cur_block(builder, &current));
-    spidir_builder_set_block(builder, label->block);
+    spidir_builder_set_block(builder, label->label_block);
 
     // create the phis for the locals
     arrsetlen(label->local_values, arrlen(ctx->locals));
@@ -140,11 +135,6 @@ static wasm_err_t wasm_init_and_verify_block_type(spidir_builder_handle_t builde
             0, NULL,
             &label->locals_phis[i]
         );
-    }
-
-    // TODO: result types
-    for (int i = 0; i < arrlen(label->result_types); i++) {
-        CHECK_FAIL();
     }
 
     spidir_builder_set_block(builder, current);
@@ -183,10 +173,11 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
         case 0x01: // nop
             break;
 
-        case 0x02: { // block
+        case 0x02: // block
+        {
             jit_label_t* label = arraddnptr(ctx->labels, 1);
             __builtin_memset(label, 0, sizeof(*label));
-            RETHROW(wasm_init_and_verify_block_type(builder, ctx, code, label));
+            RETHROW(wasm_create_label(builder, ctx, code, label));
         } break;
 
         // TODO: loop
@@ -203,7 +194,7 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
             RETHROW(wasm_prepare_branch(builder, ctx, label));
 
             // build the branch
-            spidir_builder_build_branch(builder, label->block);
+            spidir_builder_build_branch(builder, label->label_block);
 
             // we terminated the block
             arrlast(ctx->labels).block_terminated = true;
@@ -224,7 +215,7 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
             CHECK(arrlen(ctx->stack) >= 1);
             jit_value_t value = arrpop(ctx->stack);
             CHECK(value.kind == WASM_I32);
-            spidir_builder_build_brcond(builder, value.value, label->block, next);
+            spidir_builder_build_brcond(builder, value.value, label->label_block, next);
 
             // switch the block we are in now
             spidir_builder_set_block(builder, next);
@@ -531,25 +522,21 @@ static wasm_err_t wasm_jit_expr(spidir_builder_handle_t builder, jit_context_t* 
             if (arrlen(ctx->labels) != 0) {
                 jit_label_t label = arrpop(ctx->labels);
 
-                // automatically fall into the block at this point
+                // if the label we were inside was not terminated properly
+                // terminate it right now
                 if (!label.block_terminated) {
                     RETHROW(wasm_prepare_branch(builder, ctx, &label));
-                    spidir_builder_build_branch(builder, label.block);
+                    spidir_builder_build_branch(builder, label.label_block);
                 }
 
-                // set that we are in the next block
-                spidir_builder_set_block(builder, label.block);
+                // we are now in the new block
+                spidir_builder_set_block(builder, label.label_block);
 
                 // free the unneeded phis
                 arrfree(label.locals_phis);
-                arrfree(label.stack_phis);
 
-                // free the previous locals and stack
-                arrfree(ctx->stack);
+                // switch to use the locals of this new block
                 arrfree(ctx->locals);
-
-                // and use the new ones
-                // TODO: stack
                 ctx->locals = label.local_values;
 
                 // and continue to run new instructions
@@ -568,8 +555,6 @@ cleanup:
     for (int i = 0; i < arrlen(ctx->labels); i++) {
         arrfree(ctx->labels[i].locals_phis);
         arrfree(ctx->labels[i].local_values);
-        arrfree(ctx->labels[i].stack_phis);
-        arrfree(ctx->labels[i].stack_values);
     }
     arrfree(ctx->labels);
 
