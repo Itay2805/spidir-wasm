@@ -35,6 +35,11 @@ typedef struct jit_label {
 
     // did we terminate the block
     bool block_terminated;
+
+    // if this is a loop it means that the label is not placed at
+    // the end, but at the start. and at the end it will need to
+    // create a new block
+    bool loop;
 } jit_label_t;
 
 typedef struct jit_context {
@@ -143,23 +148,181 @@ cleanup:
     return err;
 }
 
-static wasm_err_t wasm_prepare_branch(spidir_builder_handle_t builder, jit_context_t* ctx, jit_label_t* label) {
-    wasm_err_t err = WASM_NO_ERROR;
-
+static void wasm_prepare_branch(spidir_builder_handle_t builder, jit_context_t* ctx, jit_label_t* label) {
     // add the phi inputs to everything
     for (int i = 0; i < arrlen(ctx->locals); i++) {
         spidir_builder_add_phi_input(builder, label->locals_phis[i], ctx->locals[i].value);
     }
+}
 
-    // TODO: add stack inputs
+static void wasm_enter_label(spidir_builder_handle_t builder, jit_context_t* ctx, jit_label_t* label) {
+    // set the new block
+    spidir_builder_set_block(builder, label->label_block);
+
+    // copy over the locals
+    for (int i = 0; i < arrlen(label->local_values); i++) {
+        ctx->locals[i] = label->local_values[i];
+    }
+}
+
+static void wasm_debug_print_instr(uint8_t instr, binary_reader_t* _r) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    binary_reader_t code = *_r;
+    static int depth = 0;
+
+    switch (instr) {
+        case 0x00: TRACE("%*sunreachable", depth, ""); break;
+        case 0x01: TRACE("%*snop", depth, ""); break;
+        case 0x02: TRACE("%*sblock", depth, ""); depth += 4; break;
+        case 0x03: TRACE("%*sloop", depth, ""); depth += 4; break;
+        case 0x04: TRACE("%*sif", depth, ""); depth += 4; break;
+        case 0x05: TRACE("%*selse", depth, ""); break;
+        case 0x0B: depth -= 4; TRACE("%*send", depth, ""); break;
+        case 0x0C: TRACE("%*sbr %u", depth, "", BINARY_READER_PULL_U32(&code)); break;
+        case 0x0D: TRACE("%*sbr_if %u", depth, "", BINARY_READER_PULL_U32(&code)); break;
+        case 0x0E: TRACE("%*sbr_table", depth, ""); break;
+        case 0x0F: TRACE("%*sreturn", depth, ""); break;
+
+        case 0xD0: TRACE("%*sdrop", depth, ""); break;
+        case 0xD1: TRACE("%*sselect", depth, ""); break;
+
+        case 0x20: TRACE("%*slocal.get %u", depth, "", BINARY_READER_PULL_U32(&code)); break;
+        case 0x21: TRACE("%*slocal.set %u", depth, "", BINARY_READER_PULL_U32(&code)); break;
+        case 0x22: TRACE("%*slocal.tee %u", depth, "", BINARY_READER_PULL_U32(&code)); break;
+        case 0x23: TRACE("%*sglobal.get %u", depth, "", BINARY_READER_PULL_U32(&code)); break;
+        case 0x24: TRACE("%*sglobal.set %u", depth, "", BINARY_READER_PULL_U32(&code)); break;
+
+        case 0x28: TRACE("%*si32.load {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x29: TRACE("%*si64.load {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x2A: TRACE("%*sf32.load {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x2B: TRACE("%*sf64.load {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x2C: TRACE("%*si32.load8_s {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x2D: TRACE("%*si32.load8_u {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x2E: TRACE("%*si32.load16_s {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x2F: TRACE("%*si32.load16_u {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x30: TRACE("%*si64.load8_s {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x31: TRACE("%*si64.load8_u {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x32: TRACE("%*si64.load16_s {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x33: TRACE("%*si64.load16_u {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x34: TRACE("%*si64.load32_s {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x35: TRACE("%*si64.load32_u {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x36: TRACE("%*si32.store {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x37: TRACE("%*si64.store {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x38: TRACE("%*sf32.store {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x39: TRACE("%*sf64.store {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x3A: TRACE("%*si32.store8 {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x3B: TRACE("%*si32.store16 {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x3C: TRACE("%*si64.store8 {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x3D: TRACE("%*si64.store16 {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x3E: TRACE("%*si64.store32 {%u,%u}", depth, "", 1 << BINARY_READER_PULL_U32(&code), BINARY_READER_PULL_U32(&code)); break;
+        case 0x3F: TRACE("%*smemory.size", depth, ""); break;
+        case 0x40: TRACE("%*smemory.grow", depth, ""); break;
+
+        case 0x41: TRACE("%*si32.const %d", depth, "", BINARY_READER_PULL_I32(&code)); break;
+        case 0x42: TRACE("%*si64.const %lld", depth, "", BINARY_READER_PULL_I64(&code)); break;
+        case 0x43: TRACE("%*sf32.const x", depth, ""); break;
+        case 0x44: TRACE("%*sf64.const x", depth, ""); break;
+
+        case 0x45: TRACE("%*si32.eqz", depth, ""); break;
+        case 0x46: TRACE("%*si32.eq", depth, ""); break;
+        case 0x47: TRACE("%*si32.ne", depth, ""); break;
+        case 0x48: TRACE("%*si32.lt_s", depth, ""); break;
+        case 0x49: TRACE("%*si32.lt_u", depth, ""); break;
+        case 0x4A: TRACE("%*si32.gt_s", depth, ""); break;
+        case 0x4B: TRACE("%*si32.gt_u", depth, ""); break;
+        case 0x4C: TRACE("%*si32.le_s", depth, ""); break;
+        case 0x4D: TRACE("%*si32.le_u", depth, ""); break;
+        case 0x4E: TRACE("%*si32.ge_s", depth, ""); break;
+        case 0x4F: TRACE("%*si32.ge_u", depth, ""); break;
+
+        case 0x50: TRACE("%*si64.eqz", depth, ""); break;
+        case 0x51: TRACE("%*si64.eq", depth, ""); break;
+        case 0x52: TRACE("%*si64.ne", depth, ""); break;
+        case 0x53: TRACE("%*si64.lt_s", depth, ""); break;
+        case 0x54: TRACE("%*si64.lt_u", depth, ""); break;
+        case 0x55: TRACE("%*si64.gt_s", depth, ""); break;
+        case 0x56: TRACE("%*si64.gt_u", depth, ""); break;
+        case 0x57: TRACE("%*si64.le_s", depth, ""); break;
+        case 0x58: TRACE("%*si64.le_u", depth, ""); break;
+        case 0x59: TRACE("%*si64.ge_s", depth, ""); break;
+        case 0x5A: TRACE("%*si64.ge_u", depth, ""); break;
+
+        case 0x5B: TRACE("%*sf32.eq", depth, ""); break;
+        case 0x5C: TRACE("%*sf32.ne", depth, ""); break;
+        case 0x5D: TRACE("%*sf32.lt", depth, ""); break;
+        case 0x5E: TRACE("%*sf32.gt", depth, ""); break;
+        case 0x5F: TRACE("%*sf32.le", depth, ""); break;
+        case 0x60: TRACE("%*sf32.ge", depth, ""); break;
+
+        case 0x61: TRACE("%*sf64.eq", depth, ""); break;
+        case 0x62: TRACE("%*sf64.ne", depth, ""); break;
+        case 0x63: TRACE("%*sf64.lt", depth, ""); break;
+        case 0x64: TRACE("%*sf64.gt", depth, ""); break;
+        case 0x65: TRACE("%*sf64.le", depth, ""); break;
+        case 0x66: TRACE("%*sf64.ge", depth, ""); break;
+
+        case 0x67: TRACE("%*si32.clz", depth, ""); break;
+        case 0x68: TRACE("%*si32.ctz", depth, ""); break;
+        case 0x69: TRACE("%*si32.popcnt", depth, ""); break;
+        case 0x6A: TRACE("%*si32.add", depth, ""); break;
+        case 0x6B: TRACE("%*si32.sub", depth, ""); break;
+        case 0x6C: TRACE("%*si32.mul", depth, ""); break;
+        case 0x6D: TRACE("%*si32.div_s", depth, ""); break;
+        case 0x6E: TRACE("%*si32.div_u", depth, ""); break;
+        case 0x6F: TRACE("%*si32.rem_s", depth, ""); break;
+        case 0x70: TRACE("%*si32.rem_u", depth, ""); break;
+        case 0x71: TRACE("%*si32.and", depth, ""); break;
+        case 0x72: TRACE("%*si32.or", depth, ""); break;
+        case 0x73: TRACE("%*si32.xor", depth, ""); break;
+        case 0x74: TRACE("%*si32.shl", depth, ""); break;
+        case 0x75: TRACE("%*si32.shr_s", depth, ""); break;
+        case 0x76: TRACE("%*si32.shr_u", depth, ""); break;
+        case 0x77: TRACE("%*si32.rotl", depth, ""); break;
+        case 0x78: TRACE("%*si32.rotr", depth, ""); break;
+
+        case 0x79: TRACE("%*si64.clz", depth, ""); break;
+        case 0x7A: TRACE("%*si64.ctz", depth, ""); break;
+        case 0x7B: TRACE("%*si64.popcnt", depth, ""); break;
+        case 0x7C: TRACE("%*si64.add", depth, ""); break;
+        case 0x7D: TRACE("%*si64.sub", depth, ""); break;
+        case 0x7E: TRACE("%*si64.mul", depth, ""); break;
+        case 0x7F: TRACE("%*si64.div_s", depth, ""); break;
+        case 0x80: TRACE("%*si64.div_u", depth, ""); break;
+        case 0x81: TRACE("%*si64.rem_s", depth, ""); break;
+        case 0x82: TRACE("%*si64.rem_u", depth, ""); break;
+        case 0x83: TRACE("%*si64.and", depth, ""); break;
+        case 0x84: TRACE("%*si64.or", depth, ""); break;
+        case 0x85: TRACE("%*si64.xor", depth, ""); break;
+        case 0x86: TRACE("%*si64.shl", depth, ""); break;
+        case 0x87: TRACE("%*si64.shr_s", depth, ""); break;
+        case 0x88: TRACE("%*si64.shr_u", depth, ""); break;
+        case 0x89: TRACE("%*si64.rotl", depth, ""); break;
+        case 0x8A: TRACE("%*si64.rotr", depth, ""); break;
+
+        case 0xA7: TRACE("%*si32.wrap_i64", depth, ""); break;
+
+        case 0xAC: TRACE("%*si64.extend_i32_s", depth, ""); break;
+        case 0xAD: TRACE("%*si64.extend_i32_u", depth, ""); break;
+
+        case 0xC0: TRACE("%*si32.extend8_s", depth, ""); break;
+        case 0xC1: TRACE("%*si32.extend16_s", depth, ""); break;
+        case 0xC2: TRACE("%*si64.extend8_s", depth, ""); break;
+        case 0xC3: TRACE("%*si64.extend16_s", depth, ""); break;
+        case 0xC4: TRACE("%*si64.extend32_s", depth, ""); break;
+
+        default: TRACE("<unknown %02x>", instr); break;
+    }
 
 cleanup:
-    return err;
+    (void)err;
 }
 
 static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t* ctx, uint8_t instr, binary_reader_t* code) {
     wasm_err_t err = WASM_NO_ERROR;
     spidir_value_t* value_arr = NULL;
+
+    wasm_debug_print_instr(instr, code);
 
     switch (instr) {
         //--------------------------------------------------------------------------------------------------------------
@@ -167,11 +330,13 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
         //--------------------------------------------------------------------------------------------------------------
 
         case 0x00: // unreachable
+        {
             spidir_builder_build_unreachable(builder);
-            break;
+        } break;
 
         case 0x01: // nop
-            break;
+        {
+        } break;
 
         case 0x02: // block
         {
@@ -180,7 +345,25 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
             RETHROW(wasm_create_label(builder, ctx, code, label));
         } break;
 
-        // TODO: loop
+        case 0x03: // loop
+        {
+            jit_label_t* label = arraddnptr(ctx->labels, 1);
+            __builtin_memset(label, 0, sizeof(*label));
+            label->loop = true;
+            RETHROW(wasm_create_label(builder, ctx, code, label));
+
+            // unlike block, we start from the block
+            // start by having all the locals as phis for the input,
+            // in case we change them in the loop
+            wasm_prepare_branch(builder, ctx, label);
+
+            // enter the loop
+            spidir_builder_build_branch(builder, label->label_block);
+
+            // and now enter the label as the first iteration
+            wasm_enter_label(builder, ctx, label);
+        } break;
+
         // TODO: if
         // TODO: if-else
         // TODO: br
@@ -191,7 +374,7 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
             jit_label_t* label = &ctx->labels[arrlen(ctx->labels) - label_index - 1];
 
             // prepare the jump
-            RETHROW(wasm_prepare_branch(builder, ctx, label));
+            wasm_prepare_branch(builder, ctx, label);
 
             // build the branch
             spidir_builder_build_branch(builder, label->label_block);
@@ -206,7 +389,7 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
             jit_label_t* label = &ctx->labels[arrlen(ctx->labels) - label_index - 1];
 
             // prepare the jump
-            RETHROW(wasm_prepare_branch(builder, ctx, label));
+            wasm_prepare_branch(builder, ctx, label);
 
             // create the next location
             spidir_block_t next = spidir_builder_create_block(builder);
@@ -250,7 +433,8 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
         // Parametric instructions
         //--------------------------------------------------------------------------------------------------------------
 
-        case 0x1B: {
+        case 0x1B: // select
+        {
             CHECK(arrlen(ctx->stack) >= 3);
             jit_value_t condition = arrpop(ctx->stack);
             jit_value_t val2 = arrpop(ctx->stack);
@@ -320,6 +504,17 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
             ctx->locals[index] = value;
         } break;
 
+        case 0x23: // global.get
+        {
+            uint32_t index = BINARY_READER_PULL_U32(code);
+            CHECK(index == 0);
+            jit_value_t value = {
+                .kind = WASM_I32,
+                .value = spidir_builder_build_iconst(builder, SPIDIR_TYPE_I32, 0)
+            };
+            arrpush(ctx->stack, value);
+        } break;
+
         // TODO: global.get
         // TODO: global.set
 
@@ -327,7 +522,77 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
         // Memory instructions
         //--------------------------------------------------------------------------------------------------------------
 
-        // TODO:
+        case 0x28: case 0x29: // {i32,i64}.load
+        {
+            CHECK(arrlen(ctx->stack) >= 1);
+            jit_value_t address = arrpop(ctx->stack);
+            CHECK(address.kind == WASM_I32);
+
+            uint32_t align = 1 << BINARY_READER_PULL_U32(code);
+            uint32_t offset = BINARY_READER_PULL_U32(code);
+
+            // choose the load parameters
+            spidir_mem_size_t size;
+            spidir_value_type_t type;
+            wasm_valkind_t kind;
+            switch (instr) {
+                case 0x28: CHECK(align == 4); size = SPIDIR_MEM_SIZE_4; type = SPIDIR_TYPE_I32; kind = WASM_I32; break;
+                case 0x29: CHECK(align == 8); size = SPIDIR_MEM_SIZE_8; type = SPIDIR_TYPE_I64; kind = WASM_I64; break;
+                default: CHECK_FAIL();
+            }
+
+            // create the offset value
+            spidir_value_t offset_value = spidir_builder_build_iadd(builder, address.value,
+                spidir_builder_build_iconst(builder, SPIDIR_TYPE_I32, offset));
+
+            // TODO: add to the real offset, for now we will just inttoptr
+            spidir_value_t ptr = spidir_builder_build_ptroff(builder,
+                spidir_builder_build_iconst(builder, SPIDIR_TYPE_PTR, 0),
+                offset_value);
+
+            // prepare the value
+            jit_value_t value = {
+                .kind = kind,
+                .value = spidir_builder_build_load(builder, size, type, ptr)
+            };
+
+            // TODO: check for sign extension or anything like that
+
+            // and we can push it
+            arrpush(ctx->stack, value);
+        } break;
+
+        case 0x36: case 0x37: // {i32,i64}.store
+        {
+            CHECK(arrlen(ctx->stack) >= 1);
+            jit_value_t data = arrpop(ctx->stack);
+            jit_value_t address = arrpop(ctx->stack);
+            CHECK(address.kind == WASM_I32);
+
+            uint32_t align = 1 << BINARY_READER_PULL_U32(code);
+            uint32_t offset = BINARY_READER_PULL_U32(code);
+
+            // choose the load parameters
+            spidir_mem_size_t size;
+            wasm_valkind_t kind;
+            switch (instr) {
+                case 0x36: CHECK(align == 4); size = SPIDIR_MEM_SIZE_4; kind = WASM_I32; break;
+                case 0x37: CHECK(align == 8); size = SPIDIR_MEM_SIZE_8; kind = WASM_I64; break;
+                default: CHECK_FAIL();
+            }
+            CHECK(data.kind == kind);
+
+            // create the offset value
+            spidir_value_t offset_value = spidir_builder_build_iadd(builder, address.value,
+                spidir_builder_build_iconst(builder, SPIDIR_TYPE_I32, offset));
+
+            // TODO: add to the real offset, for now we will just inttoptr
+            spidir_value_t ptr = spidir_builder_build_ptroff(builder,
+                spidir_builder_build_iconst(builder, SPIDIR_TYPE_PTR, 0),
+                offset_value);
+
+            spidir_builder_build_store(builder, size, data.value, ptr);
+        } break;
 
         //--------------------------------------------------------------------------------------------------------------
         // Numeric instructions
@@ -353,7 +618,30 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
             arrpush(ctx->stack, value);
         } break;
 
-        // TODO: {i32,i64}.eqz
+        // Compare to zero
+        case 0x45: case 0x50: // {i32,i64}.eqz
+        {
+            CHECK(arrlen(ctx->stack) >= 1);
+            jit_value_t c1 = arrpop(ctx->stack);
+
+            spidir_value_type_t type;
+            if (instr == 0x45) {
+                CHECK(c1.kind == WASM_I32);
+                type = SPIDIR_TYPE_I32;
+            } else {
+                CHECK(c1.kind == WASM_I64);
+                type = SPIDIR_TYPE_I64;
+            }
+
+            // perform the operation and push it, the
+            // compare always results in a 32bit immediate
+            jit_value_t result_value = {
+                .kind = WASM_I32,
+                .value = spidir_builder_build_icmp(builder, SPIDIR_ICMP_EQ, SPIDIR_TYPE_I32, c1.value,
+                    spidir_builder_build_iconst(builder, type, 0))
+            };
+            arrpush(ctx->stack, result_value);
+        } break;
 
         // Compare operations
         case 0x46: case 0x51: // {i32,i64}.eq
@@ -467,7 +755,32 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
 
         // TODO: F64 operations
 
-        // TODO: other conversions
+        case 0xA7: // i32.wrap_i64
+        {
+            CHECK(arrlen(ctx->stack) >= 1);
+            jit_value_t value = arrpop(ctx->stack);
+            CHECK(value.kind == WASM_I64);
+            value.kind = WASM_I32;
+            value.value = spidir_builder_build_itrunc(builder, value.value);
+            arrpush(ctx->stack, value);
+        } break;
+
+        case 0xAC: // i64.extend_i32_s
+        case 0xAD: // i64.extend_i32_u
+        {
+            CHECK(arrlen(ctx->stack) >= 1);
+            jit_value_t value = arrpop(ctx->stack);
+            CHECK(value.kind == WASM_I32);
+            value.kind = WASM_I64;
+            value.value = spidir_builder_build_iext(builder, value.value);
+            if (instr == 0xAC) {
+                value.value = spidir_builder_build_sfill(builder, 32, value.value);
+            } else {
+                value.value = spidir_builder_build_and(builder, value.value,
+                    spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, 0xFFFFFFFF));
+            }
+            arrpush(ctx->stack, value);
+        } break;
 
         case 0xC0: case 0xC2: // {i32,i64}.extend8_s
         case 0xC1: case 0xC3: // {i32,i64}.extend16_s
@@ -522,22 +835,31 @@ static wasm_err_t wasm_jit_expr(spidir_builder_handle_t builder, jit_context_t* 
             if (arrlen(ctx->labels) != 0) {
                 jit_label_t label = arrpop(ctx->labels);
 
-                // if the label we were inside was not terminated properly
-                // terminate it right now
-                if (!label.block_terminated) {
-                    RETHROW(wasm_prepare_branch(builder, ctx, &label));
-                    spidir_builder_build_branch(builder, label.label_block);
+                if (!label.loop) {
+                    // if the label we were inside was not terminated properly
+                    // terminate it right now
+                    if (!label.block_terminated) {
+                        wasm_prepare_branch(builder, ctx, &label);
+                        spidir_builder_build_branch(builder, label.label_block);
+                    }
+
+                    // we are now in the new block
+                    wasm_enter_label(builder, ctx, &label);
+                } else {
+                    // if we are exiting a loop and we are terminated, it means
+                    // that there is no way to exit the loop normally, and only
+                    // using some other block, so we will create a dummy block
+                    // just so it won't complain about terminating a block multiple
+                    // times
+                    if (label.block_terminated) {
+                        spidir_builder_set_block(builder, spidir_builder_create_block(builder));
+                    }
                 }
 
-                // we are now in the new block
-                spidir_builder_set_block(builder, label.label_block);
-
-                // free the unneeded phis
+                // we no longer need the phis, since this label
+                // can no longer be jumped to
                 arrfree(label.locals_phis);
-
-                // switch to use the locals of this new block
-                arrfree(ctx->locals);
-                ctx->locals = label.local_values;
+                arrfree(label.local_values);
 
                 // and continue to run new instructions
                 continue;
