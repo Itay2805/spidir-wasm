@@ -429,7 +429,39 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
             }
         } break;
 
-        // TODO: call
+        case 0x10: // call
+        {
+            uint32_t func_idx = BINARY_READER_PULL_U32(code);
+            CHECK(func_idx < arrlen(ctx->module->functions));
+            wasm_func_t* func = ctx->module->functions[func_idx];
+
+            // gather all the arguments
+            CHECK(arrlen(ctx->stack) >= func->functype->params.size);
+            for (int i = 0; i < func->functype->params.size; i++) {
+                jit_value_t value = arrpop(ctx->stack);
+                CHECK(value.kind == func->functype->params.data[i]->kind);
+                arrins(value_arr, 0, value.value);
+            }
+
+            // perform the call itself
+            spidir_value_t value = spidir_builder_build_call(builder,
+                func->jit.function,
+                arrlen(value_arr),
+                value_arr
+            );
+
+            // now push the result
+            if (func->functype->results.size == 1) {
+                jit_value_t stack_value = {
+                    .kind = func->functype->results.data[0]->kind,
+                    .value = value
+                };
+                arrpush(ctx->stack, stack_value);
+            } else {
+                CHECK(func->functype->results.size == 0);
+            }
+        } break;
+
         // TODO: call_indirect
 
         //--------------------------------------------------------------------------------------------------------------
@@ -894,6 +926,7 @@ static void wasm_jit_build_callback(spidir_builder_handle_t builder, void* _ctx)
         .locals = NULL,
         .stack = NULL,
         .function = ctx->function,
+        .module = ctx->module
     };
 
     // init the locals array to something known

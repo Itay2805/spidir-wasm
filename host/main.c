@@ -191,7 +191,7 @@ cleanup:
         wasm_config_delete(config);
     }
 
-    return IS_ERROR(err) ? EXIT_SUCCESS : EXIT_FAILURE;
+    return IS_ERROR(err) ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 
 void wasm_host_log(wasm_host_log_level_t log_level, const char* fmt, ...) {

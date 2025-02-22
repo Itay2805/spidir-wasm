@@ -549,9 +549,9 @@ extern void * stbds_shmode_func(size_t elemsize, int mode);
 #define stbds_arrlast(a)       ((a)[stbds_header(a)->length-1])
 #define stbds_arrfree(a)       ((void) ((a) ? STBDS_FREE(NULL,stbds_header(a)) : (void)0), (a)=NULL)
 #define stbds_arrdel(a,i)      stbds_arrdeln(a,i,1)
-#define stbds_arrdeln(a,i,n)   (memmove(&(a)[i], &(a)[(i)+(n)], sizeof *(a) * (stbds_header(a)->length-(n)-(i))), stbds_header(a)->length -= (n))
+#define stbds_arrdeln(a,i,n)   (__builtin_memmove(&(a)[i], &(a)[(i)+(n)], sizeof *(a) * (stbds_header(a)->length-(n)-(i))), stbds_header(a)->length -= (n))
 #define stbds_arrdelswap(a,i)  ((a)[i] = stbds_arrlast(a), stbds_header(a)->length -= 1)
-#define stbds_arrinsn(a,i,n)   (stbds_arraddn((a),(n)), memmove(&(a)[(i)+(n)], &(a)[i], sizeof *(a) * (stbds_header(a)->length-(n)-(i))))
+#define stbds_arrinsn(a,i,n)   (stbds_arraddn((a),(n)), __builtin_memmove(&(a)[(i)+(n)], &(a)[i], sizeof *(a) * (stbds_header(a)->length-(n)-(i))))
 #define stbds_arrins(a,i,v)    (stbds_arrinsn((a),(i),1), (a)[i]=(v))
 
 #define stbds_arrmaybegrow(a,n)  ((!(a) || stbds_header(a)->length + (n) > stbds_header(a)->capacity) \
