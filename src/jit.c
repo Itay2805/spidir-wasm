@@ -557,7 +557,18 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
         // Memory instructions
         //--------------------------------------------------------------------------------------------------------------
 
-        case 0x28: case 0x29: // {i32,i64}.load
+        case 0x28: // i32.load
+        case 0x29: // i64.load
+        case 0x2C: // i32.load8_s
+        case 0x2D: // i32.load8_u
+        case 0x2E: // i32.load16_s
+        case 0x2F: // i32.load16_u
+        case 0x30: // i64.load8_s
+        case 0x31: // i64.load8_u
+        case 0x32: // i64.load16_s
+        case 0x33: // i64.load16_u
+        case 0x34: // i64.load32_s
+        case 0x35: // i64.load32_u
         {
             CHECK(arrlen(ctx->stack) >= 1);
             jit_value_t address = arrpop(ctx->stack);
@@ -566,21 +577,39 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
             uint32_t align = 1 << BINARY_READER_PULL_U32(code);
             uint32_t offset = BINARY_READER_PULL_U32(code);
 
+            // TODO: unused for now
+            (void)align;
+
             // choose the load parameters
             spidir_mem_size_t size;
             spidir_value_type_t type;
             wasm_valkind_t kind;
+            uint8_t sign_extend = 0;
             switch (instr) {
-                case 0x28: CHECK(align == 4); size = SPIDIR_MEM_SIZE_4; type = SPIDIR_TYPE_I32; kind = WASM_I32; break;
-                case 0x29: CHECK(align == 8); size = SPIDIR_MEM_SIZE_8; type = SPIDIR_TYPE_I64; kind = WASM_I64; break;
+                case 0x28: size = SPIDIR_MEM_SIZE_4; type = SPIDIR_TYPE_I32; kind = WASM_I32; break; // i32.load
+                case 0x29: size = SPIDIR_MEM_SIZE_8; type = SPIDIR_TYPE_I64; kind = WASM_I64; break; // i64.load
+                case 0x2C: sign_extend = 8; size = SPIDIR_MEM_SIZE_1; type = SPIDIR_TYPE_I32; kind = WASM_I32; break; // i32.load8_s
+                case 0x2D: size = SPIDIR_MEM_SIZE_1; type = SPIDIR_TYPE_I32; kind = WASM_I32; break; // i32.load8_u
+                case 0x2E: sign_extend = 16; size = SPIDIR_MEM_SIZE_2; type = SPIDIR_TYPE_I32; kind = WASM_I32; break; // i32.load16_s
+                case 0x2F: size = SPIDIR_MEM_SIZE_2; type = SPIDIR_TYPE_I32; kind = WASM_I32; break; // i32.load16_u
+                case 0x30: sign_extend = 8; size = SPIDIR_MEM_SIZE_1; type = SPIDIR_TYPE_I64; kind = WASM_I64; break; // i64.load8_s
+                case 0x31: size = SPIDIR_MEM_SIZE_1; type = SPIDIR_TYPE_I64; kind = WASM_I64; break; // i64.load8_u
+                case 0x32: sign_extend = 16; size = SPIDIR_MEM_SIZE_2; type = SPIDIR_TYPE_I64; kind = WASM_I64; break; // i64.load16_s
+                case 0x33: size = SPIDIR_MEM_SIZE_2; type = SPIDIR_TYPE_I64; kind = WASM_I64; break; // i64.load16_u
+                case 0x34: sign_extend = 32; size = SPIDIR_MEM_SIZE_4; type = SPIDIR_TYPE_I64; kind = WASM_I64; break; // i64.load32_s
+                case 0x35: size = SPIDIR_MEM_SIZE_4; type = SPIDIR_TYPE_I64; kind = WASM_I64; break; // i64.load32_u
                 default: CHECK_FAIL();
             }
 
             // create the offset value
             spidir_value_t offset_value = spidir_builder_build_iadd(builder, address.value,
                 spidir_builder_build_iconst(builder, SPIDIR_TYPE_I32, offset));
+            offset_value = spidir_builder_build_iext(builder, offset_value);
+            offset_value = spidir_builder_build_and(builder, offset_value,
+                spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, 0xFFFFFFFF));
 
-            // TODO: add to the real offset, for now we will just inttoptr
+            // Add the memory base
+            // TODO: for now we use zero as the base
             spidir_value_t ptr = spidir_builder_build_ptroff(builder,
                 spidir_builder_build_iconst(builder, SPIDIR_TYPE_PTR, 0),
                 offset_value);
@@ -591,13 +620,22 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
                 .value = spidir_builder_build_load(builder, size, type, ptr)
             };
 
-            // TODO: check for sign extension or anything like that
+            // check if we need to perform sign extension
+            if (sign_extend) {
+                value.value = spidir_builder_build_sfill(builder, sign_extend, value.value);
+            }
 
             // and we can push it
             arrpush(ctx->stack, value);
         } break;
 
-        case 0x36: case 0x37: // {i32,i64}.store
+        case 0x36: // i32.store
+        case 0x37: // i64.store
+        case 0x3A: // i32.store8
+        case 0x3B: // i32.store16
+        case 0x3C: // i64.store8
+        case 0x3D: // i64.store16
+        case 0x3E: // i64.store32
         {
             CHECK(arrlen(ctx->stack) >= 1);
             jit_value_t data = arrpop(ctx->stack);
@@ -607,12 +645,19 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
             uint32_t align = 1 << BINARY_READER_PULL_U32(code);
             uint32_t offset = BINARY_READER_PULL_U32(code);
 
+            (void)align;
+
             // choose the load parameters
             spidir_mem_size_t size;
             wasm_valkind_t kind;
             switch (instr) {
-                case 0x36: CHECK(align == 4); size = SPIDIR_MEM_SIZE_4; kind = WASM_I32; break;
-                case 0x37: CHECK(align == 8); size = SPIDIR_MEM_SIZE_8; kind = WASM_I64; break;
+                case 0x36: size = SPIDIR_MEM_SIZE_4; kind = WASM_I32; break; // i32.store
+                case 0x37: size = SPIDIR_MEM_SIZE_8; kind = WASM_I64; break; // i64.store
+                case 0x3A: size = SPIDIR_MEM_SIZE_1; kind = WASM_I32; break; // i32.store8
+                case 0x3B: size = SPIDIR_MEM_SIZE_2; kind = WASM_I32; break; // i32.store16
+                case 0x3C: size = SPIDIR_MEM_SIZE_1; kind = WASM_I64; break; // i64.store8
+                case 0x3D: size = SPIDIR_MEM_SIZE_2; kind = WASM_I64; break; // i64.store16
+                case 0x3E: size = SPIDIR_MEM_SIZE_4; kind = WASM_I64; break; // i64.store32
                 default: CHECK_FAIL();
             }
             CHECK(data.kind == kind);
@@ -620,8 +665,12 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
             // create the offset value
             spidir_value_t offset_value = spidir_builder_build_iadd(builder, address.value,
                 spidir_builder_build_iconst(builder, SPIDIR_TYPE_I32, offset));
+            offset_value = spidir_builder_build_iext(builder, offset_value);
+            offset_value = spidir_builder_build_and(builder, offset_value,
+                spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, 0xFFFFFFFF));
 
-            // TODO: add to the real offset, for now we will just inttoptr
+            // Add the memory base
+            // TODO: for now we use zero as the base
             spidir_value_t ptr = spidir_builder_build_ptroff(builder,
                 spidir_builder_build_iconst(builder, SPIDIR_TYPE_PTR, 0),
                 offset_value);
