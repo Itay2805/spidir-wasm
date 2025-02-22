@@ -4,6 +4,17 @@
 
 #include <spidir/module.h>
 
+// config
+
+struct wasm_config_t {
+    // dump configuration
+    spidir_dump_callback_t dump_callback;
+    void* dump_callback_ctx;
+
+    // should the optimizer run
+    bool optimize;
+};
+
 // types
 
 struct wasm_functype_t {
@@ -62,10 +73,13 @@ struct wasm_func_t {
 // containers
 
 struct wasm_engine_t {
-
+    // the config set for the engine
+    wasm_config_t* config;
 };
 
 struct wasm_store_t {
+    // the engine of this store
+    wasm_engine_t* engine;
 
 };
 

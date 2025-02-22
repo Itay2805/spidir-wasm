@@ -349,12 +349,6 @@ cleanup:
     return err;
 }
 
-static spidir_dump_status_t wasm_spidir_dump_callback(const char* data, size_t size, void* ctx) {
-    wasm_host_log(WASM_HOST_LOG_RAW, "%.*s", size, data);
-    return SPIDIR_DUMP_CONTINUE;
-}
-
-
 WASM_API_EXTERN wasm_module_t* wasm_module_deserialize(wasm_store_t* store, const wasm_byte_vec_t* binary) {
     wasm_err_t err = WASM_NO_ERROR;
     wasm_module_t* module = NULL;
@@ -404,10 +398,14 @@ WASM_API_EXTERN wasm_module_t* wasm_module_deserialize(wasm_store_t* store, cons
     }
 
     // run the optimizer
-    spidir_opt_run(spidir_module);
+    if (store->engine->config != NULL && store->engine->config->optimize) {
+        spidir_opt_run(spidir_module);
+    }
 
     // dump for fun
-    spidir_module_dump(spidir_module, wasm_spidir_dump_callback, NULL);
+    if (store->engine->config != NULL && store->engine->config->dump_callback != NULL) {
+        spidir_module_dump(spidir_module, store->engine->config->dump_callback, store->engine->config->dump_callback_ctx);
+    }
 
 cleanup:
     if (IS_ERROR(err)) {

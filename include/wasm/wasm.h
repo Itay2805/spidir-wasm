@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <spidir/module.h>
 
 #ifndef WASM_API_EXTERN
 #if defined(_WIN32) && !defined(__MINGW32__) && !defined(LIBWASM_STATIC)
@@ -125,7 +126,8 @@ WASM_DECLARE_OWN(config)
 WASM_API_EXTERN own wasm_config_t* wasm_config_new(void);
 
 // Embedders may provide custom functions for manipulating configs.
-
+WASM_API_EXTERN void wasm_config_spidir_dump(wasm_config_t* config, spidir_dump_callback_t callback, void* ctx);
+WASM_API_EXTERN void wasm_config_optimize(wasm_config_t* config, bool optimize);
 
 // Engine
 

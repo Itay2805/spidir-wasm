@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <stdio.h>
 #include <getopt.h>
 #include <stdarg.h>
@@ -10,15 +11,24 @@
 
 typedef enum option_type {
     // options with short version
+    OPTION_HELP = 'h',
     OPTION_MODULE = 'm',
+    OPTION_OPTIMIZE = 'o',
 
     // options without short version
-    OPTION_DUMP_SPIDIR = 256,
+    OPTION_BASE = 0xFF,
+
+    OPTION_LOG_LEVEL,
+    OPTION_SPIDIR_DUMP,
 } option_type_t;
 
 static struct option long_options[] = {
+    { "help", no_argument, 0, OPTION_HELP },
     { "module", required_argument, 0, OPTION_MODULE },
-    { "dump-spidir", required_argument, 0, OPTION_DUMP_SPIDIR },
+    { "optimize", no_argument, 0, OPTION_OPTIMIZE },
+    { "log-level", required_argument, 0, OPTION_LOG_LEVEL },
+
+    { "spidir-dump", required_argument, 0, OPTION_SPIDIR_DUMP },
 };
 
 static const char* spidir_log_level_to_string(spidir_log_level_t level) {
@@ -36,6 +46,13 @@ static void stdout_log_callback(spidir_log_level_t level, const char* module, si
     printf("[%s %.*s] %.*s\n", spidir_log_level_to_string(level), (int) module_len, module, (int) message_len, message);
 }
 
+
+static spidir_dump_status_t spidir_dump_callback(const char* data, size_t size, void* ctx) {
+    FILE* file = (FILE*)ctx;
+    fprintf(file, "%.*s", (int)size, data);
+    return SPIDIR_DUMP_CONTINUE;
+}
+
 int main(int argc, char** argv) {
     wasm_err_t err = WASM_NO_ERROR;
     wasm_engine_t* engine = NULL;
@@ -45,12 +62,20 @@ int main(int argc, char** argv) {
     wasm_byte_vec_t binary = {};
 
     char* module_path = NULL;
-    char* spidir_output_path = NULL;
+    FILE* spidir_output_file = NULL;
+
+
+    wasm_config_t* config = wasm_config_new();
+    CHECK(config != NULL);
+
+    // enable logging and set them to warn by default
+    spidir_log_init(stdout_log_callback);
+    spidir_log_set_max_level(SPIDIR_LOG_LEVEL_WARN);
 
     while (1) {
         int option_index = 0;
 
-        int c = getopt_long(argc, argv, "m:", long_options, &option_index);
+        int c = getopt_long(argc, argv, "hm:o", long_options, &option_index);
         if (c == -1) {
             break;
         }
@@ -61,9 +86,35 @@ int main(int argc, char** argv) {
                 CHECK(module_path != NULL);
             } break;
 
-            case OPTION_DUMP_SPIDIR: {
-                spidir_output_path = strdup(optarg);
-                CHECK(spidir_output_path != NULL);
+            case OPTION_OPTIMIZE: {
+                wasm_config_optimize(config, true);
+            } break;
+
+            case OPTION_SPIDIR_DUMP: {
+                if (strcmp(optarg, "-") == 0) {
+                    wasm_config_spidir_dump(config, spidir_dump_callback, stdout);
+                } else {
+                    spidir_output_file = fopen(optarg, "wb");
+                    CHECK(spidir_output_file != NULL);
+                    wasm_config_spidir_dump(config, spidir_dump_callback, spidir_output_file);
+                }
+            } break;
+
+            case OPTION_LOG_LEVEL: {
+                errno = 0;
+                unsigned long level = strtoul(optarg, NULL, 0);
+                CHECK(errno == 0);
+
+                // TODO: also set the wasm log level from here
+                spidir_log_set_max_level(level);
+            } break;
+
+            case OPTION_HELP: {
+                TRACE(" -h | --help                        print this help text");
+                TRACE(" -m | --module <file>               the wasm module file to compile");
+                TRACE(" -o | --optimize                    perform optimizations on the spidir");
+                TRACE("      --log-level <level>           set the log level (0=none, 1=error, 2=warn, 3=info, debug=4, trace=5)");
+                TRACE("      --spidir-dump <file>          dump the spidir output into a file");
             } break;
 
             default: {
@@ -71,9 +122,6 @@ int main(int argc, char** argv) {
             } break;
         }
     }
-
-    spidir_log_init(stdout_log_callback);
-    spidir_log_set_max_level(SPIDIR_LOG_LEVEL_TRACE);
 
     // check we have the module path
     CHECK(module_path != NULL);
@@ -99,9 +147,8 @@ int main(int argc, char** argv) {
     fclose(module_file);
     module_file = NULL;
 
-
     // create the engine and store
-    engine = wasm_engine_new();
+    engine = wasm_engine_new_with_config(config);
     CHECK(engine != NULL);
     store = wasm_store_new(engine);
     CHECK(store != NULL);
@@ -113,8 +160,11 @@ int main(int argc, char** argv) {
 
 cleanup:
     free(module_path);
-    free(spidir_output_path);
     wasm_byte_vec_delete(&binary);
+
+    if (spidir_output_file != NULL) {
+        fclose(spidir_output_file);
+    }
 
     if (module_file != NULL) {
         fclose(module_file);
@@ -130,6 +180,8 @@ cleanup:
 
     if (engine != NULL) {
         wasm_engine_delete(engine);
+    } else {
+        wasm_config_delete(config);
     }
 
     return IS_ERROR(err) ? EXIT_SUCCESS : EXIT_FAILURE;

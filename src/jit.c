@@ -165,6 +165,7 @@ static void wasm_enter_label(spidir_builder_handle_t builder, jit_context_t* ctx
     }
 }
 
+__attribute__((unused))
 static void wasm_debug_print_instr(uint8_t instr, binary_reader_t* _r) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -322,7 +323,9 @@ static wasm_err_t wasm_jit_instr(spidir_builder_handle_t builder, jit_context_t*
     wasm_err_t err = WASM_NO_ERROR;
     spidir_value_t* value_arr = NULL;
 
+#if 0
     wasm_debug_print_instr(instr, code);
+#endif
 
     switch (instr) {
         //--------------------------------------------------------------------------------------------------------------
