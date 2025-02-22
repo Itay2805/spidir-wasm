@@ -72,6 +72,7 @@ int main(int argc, char** argv) {
     spidir_log_init(stdout_log_callback);
     spidir_log_set_max_level(SPIDIR_LOG_LEVEL_WARN);
 
+    bool used_help = false;
     while (1) {
         int option_index = 0;
 
@@ -82,6 +83,7 @@ int main(int argc, char** argv) {
 
         switch (c) {
             case OPTION_MODULE: {
+                CHECK(module_path == NULL, "Module already specified");
                 module_path = strdup(optarg);
                 CHECK(module_path != NULL);
             } break;
@@ -114,7 +116,8 @@ int main(int argc, char** argv) {
                 TRACE(" -m | --module <file>               the wasm module file to compile");
                 TRACE(" -o | --optimize                    perform optimizations on the spidir");
                 TRACE("      --log-level <level>           set the log level (0=none, 1=error, 2=warn, 3=info, debug=4, trace=5)");
-                TRACE("      --spidir-dump <file>          dump the spidir output into a file");
+                TRACE("      --spidir-dump <file>          dump the spidir output into a file (use `-` for stdout)");
+                used_help = true;
             } break;
 
             default: {
@@ -123,8 +126,12 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (used_help) {
+        goto cleanup;
+    }
+
     // check we have the module path
-    CHECK(module_path != NULL);
+    CHECK(module_path != NULL, "Missing module");
 
     // open the module file
     module_file = fopen(module_path, "rb");
