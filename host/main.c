@@ -218,6 +218,21 @@ int main(int argc, char** argv) {
         CHECK(mapped == m_memory_base);
     }
 
+    // Apply each active data segment into the freshly-mapped memory.
+    // Per spec, the destination range must fit inside the current size,
+    // otherwise instantiation traps. We compute end via uint64 to catch
+    // u32 overflow without relying on a runtime page-fault.
+    for (uint32_t i = 0; i < m_module.data_segments_count; i++) {
+        wasm_data_segment_t* seg = &m_module.data_segments[i];
+        uint64_t end = (uint64_t)seg->offset + seg->len;
+        CHECK(end <= m_memory_size,
+              "data segment %u exceeds memory size (%llu > %zu)",
+              i, (unsigned long long)end, m_memory_size);
+        if (seg->len != 0) {
+            memcpy((char*)m_memory_base + seg->offset, seg->data, seg->len);
+        }
+    }
+
     // get the entry point and run it
     int64_t index = wasm_find_export(&m_module, "_start");
     CHECK(index >= 0);
