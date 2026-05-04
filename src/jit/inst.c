@@ -370,6 +370,102 @@ cleanup:
     return err;
 }
 
+static wasm_err_t jit_wasm_call_indirect(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+    spidir_value_t* params = nullptr;
+    spidir_value_type_t* arg_types = nullptr;
+
+    uint32_t typeidx = BUFFER_PULL_U32(code);
+    uint32_t tableidx = BUFFER_PULL_U32(code);
+    JIT_TRACE("wasm: \tcall_indirect %d %d", typeidx, tableidx);
+
+    CHECK(typeidx < ctx->module->types_count);
+    CHECK(tableidx < ctx->module->tables_count);
+    wasm_type_t* type = &ctx->module->types[typeidx];
+    jit_table_t* table = &ctx->tables[tableidx];
+
+    // pop the table index
+    spidir_value_t idx = JIT_POP(SPIDIR_TYPE_I32);
+
+    // bounds check: trap on idx >= table->length
+    spidir_value_t in_bounds = spidir_builder_build_icmp(
+        builder,
+        SPIDIR_ICMP_ULT, SPIDIR_TYPE_I32,
+        idx,
+        spidir_builder_build_iconst(builder, SPIDIR_TYPE_I32, table->length)
+    );
+    spidir_block_t ok_block = spidir_builder_create_block(builder);
+    spidir_block_t trap_block = spidir_builder_create_block(builder);
+    spidir_builder_build_brcond(builder, in_bounds, ok_block, trap_block);
+
+    // out-of-bounds path: emit a real trap. The proper trap helper
+    // arrives with the helper infrastructure commit; until then we
+    // rely on spidir's build_unreachable and accept that the optimizer
+    // could in principle delete the incoming branch.
+    spidir_builder_set_block(builder, trap_block);
+    spidir_builder_build_unreachable(builder);
+
+    // in-bounds path: compute &state_base[table.offset + idx*sizeof(void*)]
+    spidir_builder_set_block(builder, ok_block);
+    spidir_value_t state_base = spidir_builder_build_param_ref(builder, 1);
+    spidir_value_t idx64 = spidir_builder_build_iext(builder, idx);
+    idx64 = spidir_builder_build_and(builder, idx64,
+        spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, 0xFFFFFFFF));
+    spidir_value_t slot_byte_offset = spidir_builder_build_imul(builder, idx64,
+        spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, sizeof(void*)));
+    spidir_value_t total_offset = spidir_builder_build_iadd(builder, slot_byte_offset,
+        spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, table->offset));
+    spidir_value_t slot_ptr = spidir_builder_build_ptroff(builder, state_base, total_offset);
+
+    // load the funcref (a host-pointer-sized value)
+    spidir_value_t target = spidir_builder_build_load(
+        builder,
+        SPIDIR_MEM_SIZE_8, SPIDIR_TYPE_PTR,
+        slot_ptr
+    );
+
+    // build the params: hidden mem/state passthrough, then wasm args.
+    size_t arg_count = type->arg_types_count + 2;
+    params = CALLOC(spidir_value_t, arg_count);
+    CHECK(params != nullptr);
+    arg_types = CALLOC(spidir_value_type_t, arg_count);
+    CHECK(arg_types != nullptr);
+
+    arg_types[0] = SPIDIR_TYPE_PTR;
+    arg_types[1] = SPIDIR_TYPE_PTR;
+    params[0] = spidir_builder_build_param_ref(builder, 0);
+    params[1] = state_base;
+
+    for (int i = 0; i < type->arg_types_count; i++) {
+        size_t ai = type->arg_types_count - i - 1;
+        spidir_value_type_t stype = jit_get_spidir_value_type(type->arg_types[ai]);
+        params[ai + 2] = JIT_POP(stype);
+        arg_types[ai + 2] = stype;
+    }
+
+    spidir_value_type_t ret_type = SPIDIR_TYPE_NONE;
+    if (type->result_types_count == 1) {
+        ret_type = jit_get_spidir_value_type(type->result_types[0]);
+    } else {
+        CHECK(type->result_types_count == 0);
+    }
+
+    spidir_value_t ret = spidir_builder_build_callind(
+        builder,
+        ret_type, arg_count, arg_types,
+        target, params
+    );
+
+    if (ret_type != SPIDIR_TYPE_NONE) {
+        JIT_PUSH(ret_type, ret);
+    }
+
+cleanup:
+    wasm_host_free(params);
+    wasm_host_free(arg_types);
+    return err;
+}
+
 //----------------------------------------------------------------------------------------------------------------------
 // Variable Instructions
 //----------------------------------------------------------------------------------------------------------------------
@@ -1113,6 +1209,7 @@ const jit_instruction_t g_wasm_inst_jit_callbacks[0x100] = {
     [0x0D] = jit_wasm_br_if,
     [0x0F] = jit_wasm_return,
     [0x10] = jit_wasm_call,
+    [0x11] = jit_wasm_call_indirect,
 
     // Variable Instructions
     [0x20] = jit_wasm_local_get,

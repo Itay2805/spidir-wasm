@@ -21,6 +21,10 @@
 static spidir_codegen_machine_handle_t g_spidir_machine = nullptr;
 
 typedef union code_map_entry code_map_entry_t;
+static wasm_err_t jit_build_state_init(
+    jit_context_t* ctx, wasm_module_jit_t* jit,
+    void* jit_code, hmap_t* code_map
+);
 
 static void spidir_log_callback(spidir_log_level_t level, const char* module, size_t module_len, const char* message, size_t message_len) {
     switch (level) {
@@ -50,7 +54,9 @@ void wasm_module_jit_free(wasm_module_jit_t* jit) {
         jit->binary = nullptr;
     }
     wasm_host_free(jit->exports);
+    wasm_host_free(jit->state_init);
     jit->exports = nullptr;
+    jit->state_init = nullptr;
 }
 
 static wasm_err_t jit_emit_spidir(jit_context_t* ctx) {
@@ -62,6 +68,16 @@ static wasm_err_t jit_emit_spidir(jit_context_t* ctx) {
         wasm_export_t* export = &ctx->module->exports[i];
         if (export->kind == WASM_EXPORT_FUNC) {
             RETHROW(jit_prepare_function(ctx, export->index));
+        }
+    }
+
+    // Anything referenced by an elem segment is also reachable through
+    // call_indirect at runtime so it must be prepared and queued for
+    // codegen even when no direct call exists in the module.
+    for (int i = 0; i < ctx->module->elems_count; i++) {
+        wasm_elem_segment_t* elem = &ctx->module->elems[i];
+        for (uint32_t j = 0; j < elem->funcs_count; j++) {
+            RETHROW(jit_prepare_function(ctx, elem->funcs[j]));
         }
     }
 
@@ -332,6 +348,12 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
         }
     }
 
+    // build the runtime state initializer now that every internal
+    // function has a resolved address. This also writes the endbr64
+    // entries via jit_get_indirect, so it must run before we lock the
+    // RX region below.
+    RETHROW(jit_build_state_init(ctx, jit, jit_code, &code_map));
+
     // we are finished with jitting, we can lock the region and
     // let everything use it
     CHECK(wasm_host_jit_lock(jit->binary, jit->rx_page_count, jit->ro_page_count));
@@ -353,9 +375,9 @@ cleanup:
     return err;
 }
 
-// Lays out the runtime state buffer: mutable globals get a slot, immutables
-// stay constants in the IR. The combined size is exposed as
-// wasm_module_jit_t::state_size.
+// Lays out the runtime state buffer: globals first (mutable globals get a
+// slot, immutables stay constants in the IR), then funcref tables packed
+// onto the end. The combined size is exposed as wasm_module_jit_t::state_size.
 static wasm_err_t jit_prepare_state(jit_context_t* ctx, wasm_module_jit_t* jit) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -378,7 +400,78 @@ static wasm_err_t jit_prepare_state(jit_context_t* ctx, wasm_module_jit_t* jit) 
         }
     }
 
+    // tables: each one is a vector of funcref-sized slots
+    ctx->tables = CALLOC(jit_table_t, ctx->module->tables_count);
+    CHECK(ctx->module->tables_count == 0 || ctx->tables != nullptr);
+
+    for (int i = 0; i < ctx->module->tables_count; i++) {
+        wasm_table_t* table = &ctx->module->tables[i];
+        offset = ALIGN_UP(offset, sizeof(void*));
+        ctx->tables[i].offset = offset;
+        ctx->tables[i].length = table->min;
+
+        size_t bytes;
+        CHECK(!__builtin_mul_overflow((size_t)table->min, sizeof(void*), &bytes));
+        CHECK(!__builtin_add_overflow(offset, bytes, &offset));
+    }
+
     jit->state_size = offset;
+
+cleanup:
+    return err;
+}
+
+// Builds the initializer for the runtime state buffer. The globals
+// portion is left zero (existing behavior); each elem segment is
+// translated into a write of the corresponding funcref pointers into the
+// owning table's slots. Must be called after codegen so we know each
+// internal function's runtime address.
+static wasm_err_t jit_build_state_init(
+    jit_context_t* ctx, wasm_module_jit_t* jit,
+    void* jit_code, hmap_t* code_map
+) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    if (jit->state_size == 0) {
+        goto cleanup;
+    }
+
+    jit->state_init = wasm_host_calloc(1, jit->state_size);
+    CHECK(jit->state_init != nullptr);
+
+    for (int i = 0; i < ctx->module->elems_count; i++) {
+        wasm_elem_segment_t* elem = &ctx->module->elems[i];
+        CHECK(elem->tableidx < ctx->module->tables_count);
+        jit_table_t* table = &ctx->tables[elem->tableidx];
+
+        // segment must fit within the table's reserved range
+        size_t end_slot;
+        CHECK(!__builtin_add_overflow((size_t)elem->offset, (size_t)elem->funcs_count, &end_slot));
+        CHECK(end_slot <= table->length);
+
+        for (uint32_t j = 0; j < elem->funcs_count; j++) {
+            uint32_t fidx = elem->funcs[j];
+            CHECK(ctx->functions[fidx].inited);
+
+            // Indirect call slots must point at a real function.
+            // We currently only support targeting internal functions.
+            // imports/externals would need their resolved address
+            // baked into the table here too.
+            spidir_funcref_t fr = ctx->functions[fidx].spidir;
+            CHECK(spidir_funcref_is_internal(fr),
+                  "elem segment funcidx %u points at a non-internal function", fidx);
+
+            code_map_entry_t entry = {};
+            CHECK(hmap_lookup(code_map, spidir_funcref_get_internal(fr).id, &entry.value));
+
+            // Use the indirect (endbr64) entry so the call target is
+            // identical to what gets exposed for direct exports.
+            void* target = jit_get_indirect(jit_code + entry.code_offset);
+
+            void** slots = (void**)((uint8_t*)jit->state_init + table->offset);
+            slots[elem->offset + j] = target;
+        }
+    }
 
 cleanup:
     return err;
@@ -429,6 +522,7 @@ cleanup:
     }
     wasm_host_free(ctx.functions);
     wasm_host_free(ctx.globals);
+    wasm_host_free(ctx.tables);
     vec_free(&ctx.queue);
 
     return err;
