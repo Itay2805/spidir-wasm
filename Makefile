@@ -64,4 +64,5 @@ PHONY += clean
 clean:
 	$(call cmd,clean)
 
+include libs/spidir.mk
 include scripts/build.mk
