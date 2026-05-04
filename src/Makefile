@@ -2,6 +2,7 @@ libs-y += libwasm
 
 libwasm-y += src/util/vec.c
 libwasm-y += src/buffer.c
+libwasm-y += src/module.c
 
 # Don't depend on any system header
 #cflags-libwasm-y += -nostdinc
