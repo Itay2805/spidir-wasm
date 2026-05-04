@@ -18,7 +18,7 @@ typedef enum wasm_host_log_level {
 void wasm_host_log(wasm_host_log_level_t log_level, const char* fmt, ...);
 
 /**
- * The size of a single page on the host
+ * The size of a single page on the host 
  */
 size_t wasm_host_page_size(void);
 

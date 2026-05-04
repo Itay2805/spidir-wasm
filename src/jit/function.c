@@ -42,14 +42,16 @@ wasm_err_t jit_prepare_function(jit_context_t* ctx, uint32_t funcidx) {
         CHECK(type->result_types_count == 0);
     }
 
-    // the args, with two hidden parameters: the memory base and the
-    // runtime state base (currently just the globals region).
+    // the args, note that we add two hidden parameters which are the
+    // memory base and a combined state base (globals + tables, laid out
+    // sequentially by jit_prepare_state). Keeping these first means
+    // call_indirect can pass them through unchanged.
     size_t args_count = type->arg_types_count + 2;
     args = CALLOC(spidir_value_type_t, args_count);
     int ai = 0;
 
     args[ai++] = SPIDIR_TYPE_PTR; // the memory base
-    args[ai++] = SPIDIR_TYPE_PTR; // the state base (globals)
+    args[ai++] = SPIDIR_TYPE_PTR; // the state base (globals + tables)
 
     for (int64_t i = 0; i < type->arg_types_count; i++) {
         args[ai++] = jit_get_spidir_value_type(type->arg_types[i]);
