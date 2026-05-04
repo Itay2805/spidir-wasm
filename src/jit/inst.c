@@ -291,6 +291,186 @@ cleanup:
 }
 
 //----------------------------------------------------------------------------------------------------------------------
+// Memory instructions
+//----------------------------------------------------------------------------------------------------------------------
+
+typedef struct wasm_mem_arg {
+    uint32_t index;
+    uint32_t align;
+    uint64_t offset;
+} wasm_mem_arg_t;
+
+static wasm_err_t jit_pull_memarg(buffer_t* buffer, wasm_mem_arg_t* arg) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    arg->align = BUFFER_PULL_U32(buffer);
+
+    // if the value is larger than or equal to 64 then we have an index
+    // and the real value is 64 less
+    if (arg->align >= 64) {
+        arg->align -= 64;
+        arg->index = BUFFER_PULL_U32(buffer);
+    } else {
+        arg->index = 0;
+    }
+
+    // validate the final alignment
+    CHECK(arg->align < 64);
+
+    // get the offset
+    arg->offset = BUFFER_PULL_U64(buffer);
+
+cleanup:
+    return err;
+}
+
+static wasm_err_t jit_wasm_load(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint8_t opcode = ((uint8_t*)code->data)[-1];
+
+    // get the memory argument
+    wasm_mem_arg_t mem_arg = {};
+    RETHROW(jit_pull_memarg(code, &mem_arg));
+    if (mem_arg.index == 0) {
+        JIT_TRACE("wasm: \t%s %d, %llu", g_wasm_opcode_names[opcode], 1 << mem_arg.align, (unsigned long long)mem_arg.offset);
+    } else {
+        JIT_TRACE("wasm: \t%s %d, %d, %llu", g_wasm_opcode_names[opcode], 1 << mem_arg.align, mem_arg.index, (unsigned long long)mem_arg.offset);
+    }
+
+    // figure the exact parameters for the load
+    spidir_value_type_t type;
+    spidir_mem_size_t mem_size;
+    uint32_t sign_extend = 0;
+    uint32_t zero_extend = 0;
+    switch (opcode) {
+        case 0x28: type = SPIDIR_TYPE_I32; mem_size = SPIDIR_MEM_SIZE_4; break;
+        case 0x29: type = SPIDIR_TYPE_I64; mem_size = SPIDIR_MEM_SIZE_8; break;
+        case 0x2A: type = SPIDIR_TYPE_F32; mem_size = SPIDIR_MEM_SIZE_4; break;
+        case 0x2B: type = SPIDIR_TYPE_F64; mem_size = SPIDIR_MEM_SIZE_8; break;
+        case 0x2C: type = SPIDIR_TYPE_I32; mem_size = SPIDIR_MEM_SIZE_1; sign_extend = 8; break;
+        case 0x2D: type = SPIDIR_TYPE_I32; mem_size = SPIDIR_MEM_SIZE_1; zero_extend = 8; break;
+        case 0x2E: type = SPIDIR_TYPE_I32; mem_size = SPIDIR_MEM_SIZE_2; sign_extend = 16; break;
+        case 0x2F: type = SPIDIR_TYPE_I32; mem_size = SPIDIR_MEM_SIZE_2; zero_extend = 16; break;
+        case 0x30: type = SPIDIR_TYPE_I64; mem_size = SPIDIR_MEM_SIZE_1; sign_extend = 8; break;
+        case 0x31: type = SPIDIR_TYPE_I64; mem_size = SPIDIR_MEM_SIZE_1; zero_extend = 8; break;
+        case 0x32: type = SPIDIR_TYPE_I64; mem_size = SPIDIR_MEM_SIZE_2; sign_extend = 16; break;
+        case 0x33: type = SPIDIR_TYPE_I64; mem_size = SPIDIR_MEM_SIZE_2; zero_extend = 16; break;
+        case 0x34: type = SPIDIR_TYPE_I64; mem_size = SPIDIR_MEM_SIZE_4; sign_extend = 32; break;
+        case 0x35: type = SPIDIR_TYPE_I64; mem_size = SPIDIR_MEM_SIZE_4; zero_extend = 32; break;
+        default: CHECK_FAIL();
+    }
+
+    // get the value and offset, the value type depends on the instruction
+    spidir_value_t offset = JIT_POP(SPIDIR_TYPE_I32);
+
+    // extend the offset to 64bit
+    offset = spidir_builder_build_iext(builder, offset);
+    offset = spidir_builder_build_and(builder, offset,
+        spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, 0xFFFFFFFF));
+
+    // if we have an offset add it
+    if (mem_arg.offset != 0) {
+        // because we ensure the offset is at most 32bit, the addition will be 33bit, the runtime
+        // ensures an 8GB region per memory instance, so it will always trap no matter what value
+        // it gets in here
+        CHECK(mem_arg.offset <= UINT32_MAX);
+        offset = spidir_builder_build_iadd(builder, offset,
+            spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, mem_arg.offset));
+    }
+
+    // load the value
+    spidir_value_t mem_base = spidir_builder_build_param_ref(builder, 0);
+    spidir_value_t value = spidir_builder_build_load(
+        builder,
+        mem_size, type,
+        spidir_builder_build_ptroff(builder, mem_base, offset)
+    );
+
+    if (sign_extend != 0) {
+        // sign extend from the relevant bit
+        value = spidir_builder_build_sfill(builder, sign_extend, value);
+    } else if (zero_extend != 0) {
+        // perform a mask on the lower bits
+        uint64_t mask = (1ull << zero_extend) - 1;
+        spidir_value_t mask_value = SPIDIR_VALUE_INVALID;
+        if (type == SPIDIR_TYPE_I32) {
+            mask_value = spidir_builder_build_iconst(builder, SPIDIR_TYPE_I32, mask);
+        } else {
+            mask_value = spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, mask);
+        }
+        value = spidir_builder_build_and(builder, value, mask_value);
+    }
+
+    // and finally push it
+    JIT_PUSH(type, value);
+
+cleanup:
+    return err;
+}
+
+static wasm_err_t jit_wasm_store(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint8_t opcode = ((uint8_t*)code->data)[-1];
+
+    // get the memory argument
+    wasm_mem_arg_t mem_arg = {};
+    RETHROW(jit_pull_memarg(code, &mem_arg));
+    if (mem_arg.index == 0) {
+        JIT_TRACE("wasm: \t%s %d, %llu", g_wasm_opcode_names[opcode], 1 << mem_arg.align, (unsigned long long)mem_arg.offset);
+    } else {
+        JIT_TRACE("wasm: \t%s %d, %d, %llu", g_wasm_opcode_names[opcode], 1 << mem_arg.align, mem_arg.index, (unsigned long long)mem_arg.offset);
+    }
+
+    // figure the parameters for the store
+    spidir_value_type_t type;
+    spidir_mem_size_t mem_size;
+    switch (opcode) {
+        case 0x36: type = SPIDIR_TYPE_I32; mem_size = SPIDIR_MEM_SIZE_4; break;
+        case 0x37: type = SPIDIR_TYPE_I64; mem_size = SPIDIR_MEM_SIZE_8;  break;
+        case 0x38: type = SPIDIR_TYPE_F32; mem_size = SPIDIR_MEM_SIZE_4;  break;
+        case 0x39: type = SPIDIR_TYPE_F64; mem_size = SPIDIR_MEM_SIZE_8;  break;
+        case 0x3A: type = SPIDIR_TYPE_I32; mem_size = SPIDIR_MEM_SIZE_1;  break;
+        case 0x3B: type = SPIDIR_TYPE_I32; mem_size = SPIDIR_MEM_SIZE_2;  break;
+        case 0x3C: type = SPIDIR_TYPE_I64; mem_size = SPIDIR_MEM_SIZE_1;  break;
+        case 0x3D: type = SPIDIR_TYPE_I64; mem_size = SPIDIR_MEM_SIZE_2;  break;
+        case 0x3E: type = SPIDIR_TYPE_I64; mem_size = SPIDIR_MEM_SIZE_4;  break;
+        default: CHECK_FAIL();
+    }
+
+    // get the value and offset, the value type depends on the instruction
+    spidir_value_t value = JIT_POP(type);
+    spidir_value_t offset = JIT_POP(SPIDIR_TYPE_I32);
+
+    // extend the offset to 64bit
+    offset = spidir_builder_build_iext(builder, offset);
+    offset = spidir_builder_build_and(builder, offset,
+        spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, 0xFFFFFFFF));
+
+    // if we have an offset add it
+    if (mem_arg.offset != 0) {
+        // because we ensure the offset is at most 32bit, the addition will be 33bit, the runtime
+        // ensures an 8GB region per memory instance, so it will always trap no matter what value
+        // it gets in here
+        CHECK(mem_arg.offset <= UINT32_MAX);
+        offset = spidir_builder_build_iadd(builder, offset,
+            spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, mem_arg.offset));
+    }
+
+    spidir_value_t mem_base = spidir_builder_build_param_ref(builder, 0);
+    spidir_builder_build_store(
+        builder,
+        mem_size,
+        value,
+        spidir_builder_build_ptroff(builder, mem_base, offset)
+    );
+
+cleanup:
+    return err;
+}
+
+//----------------------------------------------------------------------------------------------------------------------
 // Numeric Instructions
 //----------------------------------------------------------------------------------------------------------------------
 
@@ -717,6 +897,10 @@ const jit_instruction_t g_wasm_inst_jit_callbacks[0x100] = {
     [0x22] = jit_wasm_local_tee,
     [0x23] = jit_wasm_global_get,
     [0x24] = jit_wasm_global_set,
+
+    // Memory Instructions
+    [0x28 ... 0x35] = jit_wasm_load,
+    [0x36 ... 0x3E] = jit_wasm_store,
 
     // Numeric Instructions
     [0x41] = jit_wasm_i32_const,
