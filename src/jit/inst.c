@@ -312,6 +312,65 @@ cleanup:
     return err;
 }
 
+// Integer-to-integer conversions: wrap, extend (signed/unsigned), and the
+// sign-extension-within-type ops. Skipping reinterpret_* because spidir has
+// no bitcast builder.
+//   0xA7 i32.wrap_i64     -> itrunc
+//   0xAC i64.extend_i32_s -> iext + sfill 32
+//   0xAD i64.extend_i32_u -> iext + and 0xFFFFFFFF
+//   0xC0 i32.extend8_s    -> sfill 8  (i32)
+//   0xC1 i32.extend16_s   -> sfill 16 (i32)
+//   0xC2 i64.extend8_s    -> sfill 8  (i64)
+//   0xC3 i64.extend16_s   -> sfill 16 (i64)
+//   0xC4 i64.extend32_s   -> sfill 32 (i64)
+static wasm_err_t jit_wasm_iconv(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint8_t opcode = ((uint8_t*)code->data)[-1];
+    JIT_TRACE("wasm: \t%s", g_wasm_opcode_names[opcode]);
+
+    switch (opcode) {
+        case 0xA7: {
+            spidir_value_t v = JIT_POP(SPIDIR_TYPE_I64);
+            JIT_PUSH(SPIDIR_TYPE_I32, spidir_builder_build_itrunc(builder, v));
+        } break;
+
+        case 0xAC: {
+            spidir_value_t v = JIT_POP(SPIDIR_TYPE_I32);
+            spidir_value_t e = spidir_builder_build_iext(builder, v);
+            JIT_PUSH(SPIDIR_TYPE_I64, spidir_builder_build_sfill(builder, 32, e));
+        } break;
+
+        case 0xAD: {
+            spidir_value_t v = JIT_POP(SPIDIR_TYPE_I32);
+            spidir_value_t e = spidir_builder_build_iext(builder, v);
+            spidir_value_t mask = spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, 0xFFFFFFFF);
+            JIT_PUSH(SPIDIR_TYPE_I64, spidir_builder_build_and(builder, e, mask));
+        } break;
+
+        case 0xC0 ... 0xC4: {
+            // sfill within the operand type
+            spidir_value_type_t type = (opcode <= 0xC1) ? SPIDIR_TYPE_I32 : SPIDIR_TYPE_I64;
+            uint8_t width;
+            switch (opcode) {
+                case 0xC0: width = 8;  break;
+                case 0xC1: width = 16; break;
+                case 0xC2: width = 8;  break;
+                case 0xC3: width = 16; break;
+                case 0xC4: width = 32; break;
+                default: CHECK_FAIL();
+            }
+            spidir_value_t v = JIT_POP(type);
+            JIT_PUSH(type, spidir_builder_build_sfill(builder, width, v));
+        } break;
+
+        default: CHECK_FAIL();
+    }
+
+cleanup:
+    return err;
+}
+
 static wasm_err_t jit_wasm_shift(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -452,4 +511,9 @@ const jit_instruction_t g_wasm_inst_jit_callbacks[0x100] = {
     [0x74 ... 0x76] = jit_wasm_shift,
     [0x7C ... 0x85] = jit_wasm_binopi,
     [0x86 ... 0x88] = jit_wasm_shift,
+
+    // Conversions
+    [0xA7]          = jit_wasm_iconv,    // i32.wrap_i64
+    [0xAC ... 0xAD] = jit_wasm_iconv,    // i64.extend_i32_{s,u}
+    [0xC0 ... 0xC4] = jit_wasm_iconv,    // i{32,64}.extend{8,16,32}_s
 };
