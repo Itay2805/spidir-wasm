@@ -22,6 +22,15 @@ typedef struct jit_global {
     spidir_value_type_t type;
 } jit_global_t;
 
+// One entry per wasm table. Tables are laid out in the same runtime buffer
+// as globals, starting after the globals region. `offset` is the byte offset
+// of slot 0 within the combined state buffer; `length` is the number of
+// funcref slots (used to materialize the runtime bounds check).
+typedef struct jit_table {
+    size_t offset;
+    uint32_t length;
+} jit_table_t;
+
 typedef vec(uint32_t) function_queue_t;
 
 typedef struct jit_context {
@@ -33,6 +42,9 @@ typedef struct jit_context {
 
     // the globals
     jit_global_t* globals;
+
+    // the tables
+    jit_table_t* tables;
 
     // queue of functions to do
     function_queue_t queue;

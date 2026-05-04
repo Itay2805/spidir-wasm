@@ -178,11 +178,16 @@ int main(int argc, char** argv) {
     // jit the module
     RETHROW(wasm_module_jit(&m_module, &m_module_jit, &config));
 
-    // allocate the runtime state buffer (globals) and zero it
+    // allocate the runtime state buffer (globals + tables) and seed it
+    // with the JIT-built initializer so funcref tables come up populated
     if (m_module_jit.state_size != 0) {
         state_base = malloc(m_module_jit.state_size);
         CHECK(state_base != nullptr);
-        memset(state_base, 0, m_module_jit.state_size);
+        if (m_module_jit.state_init != nullptr) {
+            memcpy(state_base, m_module_jit.state_init, m_module_jit.state_size);
+        } else {
+            memset(state_base, 0, m_module_jit.state_size);
+        }
     }
 
     // we reserve 8gb of address space as required
