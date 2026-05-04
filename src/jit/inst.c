@@ -250,6 +250,28 @@ cleanup:
     return err;
 }
 
+static wasm_err_t jit_wasm_f32_const(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    float value = BUFFER_PULL(float, code);
+    JIT_TRACE("wasm: \tf32.const %f", value);
+    JIT_PUSH(SPIDIR_TYPE_F32, spidir_builder_build_fconst32(builder, value));
+
+cleanup:
+    return err;
+}
+
+static wasm_err_t jit_wasm_f64_const(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    double value = BUFFER_PULL(double, code);
+    JIT_TRACE("wasm: \tf64.const %lf", value);
+    JIT_PUSH(SPIDIR_TYPE_F64, spidir_builder_build_fconst64(builder, value));
+
+cleanup:
+    return err;
+}
+
 #define SWAP(a, b) \
     do { \
         typeof(a) temp__ = a; \
@@ -366,6 +388,131 @@ static wasm_err_t jit_wasm_iconv(spidir_builder_handle_t builder, buffer_t* code
 
         default: CHECK_FAIL();
     }
+
+cleanup:
+    return err;
+}
+
+static wasm_err_t jit_wasm_cmpf(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint8_t opcode = ((uint8_t*)code->data)[-1];
+    JIT_TRACE("wasm: \t%s", g_wasm_opcode_names[opcode]);
+
+    // figure the exact type
+    spidir_value_type_t type;
+    switch (opcode) {
+        case 0x5B ... 0x60: type = SPIDIR_TYPE_F32; opcode -= 0x5B; break;
+        case 0x61 ... 0x66: type = SPIDIR_TYPE_F64; opcode -= 0x61; break;
+        default: CHECK_FAIL();
+    }
+
+    // get the args
+    spidir_value_t arg2 = JIT_POP(type);
+    spidir_value_t arg1 = JIT_POP(type);
+
+    // choose the compare, got gt kinds we just swap
+    spidir_fcmp_kind_t kind;
+    switch (opcode) {
+        case 0: kind = SPIDIR_FCMP_OEQ; break;
+        case 1: kind = SPIDIR_FCMP_UNE; break;
+        case 2: kind = SPIDIR_FCMP_OLT; break;
+        case 3: kind = SPIDIR_FCMP_OLT; SWAP(arg1, arg2); break;
+        case 4: kind = SPIDIR_FCMP_OLE; break;
+        case 5: kind = SPIDIR_FCMP_OLE; SWAP(arg1, arg2); break;
+        default: CHECK_FAIL();
+    }
+
+    // build the icmp, it always outputs i32
+    spidir_value_t value = spidir_builder_build_fcmp(builder,
+        kind, SPIDIR_TYPE_I32,
+        arg1, arg2
+    );
+
+    // push the result
+    JIT_PUSH(SPIDIR_TYPE_I32, value);
+
+cleanup:
+    return err;
+}
+
+static wasm_err_t jit_wasm_itof(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint8_t opcode = ((uint8_t*)code->data)[-1];
+    JIT_TRACE("wasm: \t%s", g_wasm_opcode_names[opcode]);
+
+    spidir_value_type_t out_type;
+    switch (opcode) {
+        case 0xB2 ... 0xB5: out_type = SPIDIR_TYPE_F32; opcode -= 0xB2; break;
+        case 0xB7 ... 0xBA: out_type = SPIDIR_TYPE_F64; opcode -= 0xB7; break;
+        default: CHECK_FAIL();
+    }
+
+    spidir_value_type_t in_type = (opcode & 2) ? SPIDIR_TYPE_I64 : SPIDIR_TYPE_I32;
+    bool is_unsigned = opcode & 1;
+
+    spidir_value_t value = JIT_POP(in_type);
+    spidir_value_t result = is_unsigned
+        ? spidir_builder_build_uinttofloat(builder, out_type, value)
+        : spidir_builder_build_sinttofloat(builder, out_type, value);
+
+    JIT_PUSH(out_type, result);
+
+cleanup:
+    return err;
+}
+
+static wasm_err_t jit_wasm_fconv(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint8_t opcode = ((uint8_t*)code->data)[-1];
+    JIT_TRACE("wasm: \t%s", g_wasm_opcode_names[opcode]);
+
+    switch (opcode) {
+        case 0xB6: {
+            spidir_value_t v = JIT_POP(SPIDIR_TYPE_F64);
+            JIT_PUSH(SPIDIR_TYPE_F32, spidir_builder_build_fnarrow(builder, v));
+        } break;
+
+        case 0xBB: {
+            spidir_value_t v = JIT_POP(SPIDIR_TYPE_F32);
+            JIT_PUSH(SPIDIR_TYPE_F64, spidir_builder_build_fwiden(builder, v));
+        } break;
+
+        default: CHECK_FAIL();
+    }
+
+cleanup:
+    return err;
+}
+
+static wasm_err_t jit_wasm_binopf(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint8_t opcode = ((uint8_t*)code->data)[-1];
+    JIT_TRACE("wasm: \t%s", g_wasm_opcode_names[opcode]);
+
+    spidir_value_type_t type;
+    switch (opcode) {
+        case 0x92 ... 0x95: type = SPIDIR_TYPE_F32; opcode -= 0x92; break;
+        case 0xA0 ... 0xA3: type = SPIDIR_TYPE_F64; opcode -= 0xA0; break;
+        default: CHECK_FAIL();
+    }
+
+    spidir_value_t arg2 = JIT_POP(type);
+    spidir_value_t arg1 = JIT_POP(type);
+
+    spidir_value_t result;
+    switch (opcode) {
+        case 0: result = spidir_builder_build_fadd(builder, arg1, arg2); break;
+        case 1: result = spidir_builder_build_fsub(builder, arg1, arg2); break;
+        case 2: result = spidir_builder_build_fmul(builder, arg1, arg2); break;
+        case 3: result = spidir_builder_build_fdiv(builder, arg1, arg2); break;
+        default: CHECK_FAIL();
+    }
+
+    JIT_PUSH(type, result);
 
 cleanup:
     return err;
@@ -511,9 +658,18 @@ const jit_instruction_t g_wasm_inst_jit_callbacks[0x100] = {
     [0x74 ... 0x76] = jit_wasm_shift,
     [0x7C ... 0x85] = jit_wasm_binopi,
     [0x86 ... 0x88] = jit_wasm_shift,
+    [0x92 ... 0x95] = jit_wasm_binopf,
+    [0xA0 ... 0xA3] = jit_wasm_binopf,
+    [0x43] = jit_wasm_f32_const,
+    [0x44] = jit_wasm_f64_const,
+    [0x5B ... 0x66] = jit_wasm_cmpf,
 
     // Conversions
     [0xA7]          = jit_wasm_iconv,    // i32.wrap_i64
     [0xAC ... 0xAD] = jit_wasm_iconv,    // i64.extend_i32_{s,u}
+    [0xB2 ... 0xB5] = jit_wasm_itof,     // f32.convert_i{32,64}_{s,u}
+    [0xB6]          = jit_wasm_fconv,    // f32.demote_f64
+    [0xB7 ... 0xBA] = jit_wasm_itof,     // f64.convert_i{32,64}_{s,u}
+    [0xBB]          = jit_wasm_fconv,    // f64.promote_f32
     [0xC0 ... 0xC4] = jit_wasm_iconv,    // i{32,64}.extend{8,16,32}_s
 };
