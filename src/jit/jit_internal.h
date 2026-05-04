@@ -17,6 +17,11 @@ typedef struct jit_function {
     bool inited;
 } jit_function_t;
 
+typedef struct jit_global {
+    size_t offset;
+    spidir_value_type_t type;
+} jit_global_t;
+
 typedef vec(uint32_t) function_queue_t;
 
 typedef struct jit_context {
@@ -25,6 +30,9 @@ typedef struct jit_context {
 
     // the jit functions
     jit_function_t* functions;
+
+    // the globals
+    jit_global_t* globals;
 
     // queue of functions to do
     function_queue_t queue;

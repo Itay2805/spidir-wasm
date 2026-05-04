@@ -42,12 +42,14 @@ wasm_err_t jit_prepare_function(jit_context_t* ctx, uint32_t funcidx) {
         CHECK(type->result_types_count == 0);
     }
 
-    // the args, with one hidden parameter for the memory base.
-    size_t args_count = type->arg_types_count + 1;
+    // the args, with two hidden parameters: the memory base and the
+    // runtime state base (currently just the globals region).
+    size_t args_count = type->arg_types_count + 2;
     args = CALLOC(spidir_value_type_t, args_count);
     int ai = 0;
 
     args[ai++] = SPIDIR_TYPE_PTR; // the memory base
+    args[ai++] = SPIDIR_TYPE_PTR; // the state base (globals)
 
     for (int64_t i = 0; i < type->arg_types_count; i++) {
         args[ai++] = jit_get_spidir_value_type(type->arg_types[i]);
@@ -121,8 +123,8 @@ static void jit_build_function(spidir_builder_handle_t builder, void* _ctx) {
     jit_value_t* args = vec_add(&func.locals, args_count);
     for (int i = 0; i < args_count; i++) {
         args[i].type = jit_get_spidir_value_type(arg_types[i]);
-        // hidden param 0 is the memory base; wasm args follow
-        args[i].value = spidir_builder_build_param_ref(builder, i + 1);
+        // hidden params 0..1 are mem/state; wasm args follow
+        args[i].value = spidir_builder_build_param_ref(builder, i + 2);
     }
 
     // setup ret type

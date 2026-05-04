@@ -69,6 +69,7 @@ int main(int argc, char** argv) {
     wasm_err_t err = WASM_NO_ERROR;
     FILE* module_file = nullptr;
     char* module_binary = nullptr;
+    void* state_base = nullptr;
     int status = EXIT_SUCCESS;
 
     char* module_path = nullptr;
@@ -177,6 +178,13 @@ int main(int argc, char** argv) {
     // jit the module
     RETHROW(wasm_module_jit(&m_module, &m_module_jit, &config));
 
+    // allocate the runtime state buffer (globals) and zero it
+    if (m_module_jit.state_size != 0) {
+        state_base = malloc(m_module_jit.state_size);
+        CHECK(state_base != nullptr);
+        memset(state_base, 0, m_module_jit.state_size);
+    }
+
     // we reserve 8gb of address space as required
     m_memory_base = mmap(
         NULL,
@@ -206,14 +214,15 @@ int main(int argc, char** argv) {
     // get the entry point and run it
     int64_t index = wasm_find_export(&m_module, "_start");
     CHECK(index >= 0);
-    int (*entry)(void* memory) = m_module_jit.exports[index].func.address;
-    status = entry(m_memory_base);
+    int (*entry)(void* memory, void* state) = m_module_jit.exports[index].func.address;
+    status = entry(m_memory_base, state_base);
 
 cleanup:
     wasm_module_jit_free(&m_module_jit);
     wasm_module_free(&m_module);
     free(module_path);
 
+    free(state_base);
     if (m_memory_base != nullptr && m_memory_base != MAP_FAILED) {
         munmap(m_memory_base, 8ull * 1024ull * 1024ull * 1024ull);
     }

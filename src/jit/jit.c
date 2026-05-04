@@ -320,6 +320,10 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
             void* target = jit_get_indirect(jit_code + entry.code_offset);
             jit->exports[i].func.address = target;
 
+        } else if (kind == WASM_EXPORT_GLOBAL) {
+            // get the global's offset
+            jit->exports[i].global.offset = ctx->globals[index].offset;
+
         } else if (kind == WASM_EXPORT_MEMORY) {
             // nothing to do...
 
@@ -349,6 +353,37 @@ cleanup:
     return err;
 }
 
+// Lays out the runtime state buffer: mutable globals get a slot, immutables
+// stay constants in the IR. The combined size is exposed as
+// wasm_module_jit_t::state_size.
+static wasm_err_t jit_prepare_state(jit_context_t* ctx, wasm_module_jit_t* jit) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    ctx->globals = CALLOC(jit_global_t, ctx->module->globals_count);
+    CHECK(ctx->module->globals_count == 0 || ctx->globals != nullptr);
+
+    size_t offset = 0;
+    for (int i = 0; i < ctx->module->globals_count; i++) {
+        wasm_global_t* global = &ctx->module->globals[i];
+        spidir_value_type_t type = jit_get_spidir_value_type(global->value.kind);
+        ctx->globals[i].type = type;
+        if (global->mutable) {
+            // mutable, we need space for it
+            offset = ALIGN_UP(offset, jit_get_spidir_size(type));
+            ctx->globals[i].offset = offset;
+            offset += jit_get_spidir_size(type);
+        } else {
+            // immutable, not going to be allocated, mark it as such
+            ctx->globals[i].offset = -1;
+        }
+    }
+
+    jit->state_size = offset;
+
+cleanup:
+    return err;
+}
+
 wasm_err_t wasm_module_jit(wasm_module_t* module, wasm_module_jit_t* jit, wasm_jit_config_t* config) {
     wasm_err_t err = WASM_NO_ERROR;
     jit_context_t ctx = {
@@ -366,6 +401,9 @@ wasm_err_t wasm_module_jit(wasm_module_t* module, wasm_module_jit_t* jit, wasm_j
     // it should be cheap enough to allocate it linearly
     ctx.functions = CALLOC(jit_function_t, module->functions_count + module->imports_count);
     CHECK(ctx.functions != nullptr);
+
+    // setup the runtime state buffer (globals)
+    RETHROW(jit_prepare_state(&ctx, jit));
 
     ctx.spidir = spidir_module_create();
 
@@ -390,6 +428,7 @@ cleanup:
         spidir_module_destroy(ctx.spidir);
     }
     wasm_host_free(ctx.functions);
+    wasm_host_free(ctx.globals);
     vec_free(&ctx.queue);
 
     return err;
