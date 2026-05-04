@@ -266,33 +266,36 @@ cleanup:
     return err;
 }
 
-static wasm_err_t wasm_parse_table_section(wasm_module_t* module, buffer_t* buffer) {
+static wasm_err_t wasm_parse_memory_section(wasm_module_t* module, buffer_t* buffer) {
     wasm_err_t err = WASM_NO_ERROR;
 
     uint32_t count = BUFFER_PULL_U32(buffer);
-    module->tables = CALLOC(wasm_table_t, count);
-    CHECK(module->tables != nullptr);
-    module->tables_count = count;
+    CHECK(count == 1, "Multi-memory is not supported");
 
-    for (int i = 0; i < count; i++) {
-        // MVP-only reftype: funcref (0x70). Externref (0x6F) and any
-        // other reference types are out of scope.
-        uint8_t reftype = BUFFER_PULL(uint8_t, buffer);
-        CHECK(reftype == 0x70, "Unsupported reftype %02x", reftype);
+    // TODO: multi-memory support
+    // TODO: support for 64bit addresses
 
-        uint8_t limit_type = BUFFER_PULL(uint8_t, buffer);
-        if (limit_type == 0x00) {
-            module->tables[i].min = BUFFER_PULL_U32(buffer);
-            module->tables[i].max = UINT32_MAX;
-        } else if (limit_type == 0x01) {
-            module->tables[i].min = BUFFER_PULL_U32(buffer);
-            module->tables[i].max = BUFFER_PULL_U32(buffer);
-        } else {
-            CHECK_FAIL("Invalid table limit %02x", limit_type);
-        }
-
-        CHECK(module->tables[i].min <= module->tables[i].max);
+    uint8_t limit_type = BUFFER_PULL(uint8_t, buffer);
+    if (limit_type == 0x00) {
+        module->memory_min = BUFFER_PULL_U64(buffer);
+        module->memory_max = (UINT32_MAX / WASM_PAGE_SIZE) - 1;
+    } else if (limit_type == 0x01) {
+        module->memory_min = BUFFER_PULL_U64(buffer);
+        module->memory_max = BUFFER_PULL_U64(buffer);
+    } else {
+        CHECK_FAIL("Invalid limit %02x", limit_type);
     }
+
+    // ensure the min is less or equals to the max
+    CHECK(module->memory_min <= module->memory_max);
+
+    // turn into bytes instead of pages
+    CHECK(!__builtin_mul_overflow(module->memory_min, WASM_PAGE_SIZE, &module->memory_min));
+    CHECK(!__builtin_mul_overflow(module->memory_max, WASM_PAGE_SIZE, &module->memory_max));
+
+    // ensure both stay within 4GB
+    CHECK(module->memory_min < SIZE_4GB);
+    CHECK(module->memory_max < SIZE_4GB);
 
     CHECK(buffer->len == 0);
 
@@ -370,36 +373,33 @@ cleanup:
     return err;
 }
 
-static wasm_err_t wasm_parse_memory_section(wasm_module_t* module, buffer_t* buffer) {
+static wasm_err_t wasm_parse_table_section(wasm_module_t* module, buffer_t* buffer) {
     wasm_err_t err = WASM_NO_ERROR;
 
     uint32_t count = BUFFER_PULL_U32(buffer);
-    CHECK(count == 1, "Multi-memory is not supported");
+    module->tables = CALLOC(wasm_table_t, count);
+    CHECK(module->tables != nullptr);
+    module->tables_count = count;
 
-    // TODO: multi-memory support
-    // TODO: support for 64bit addresses
+    for (int i = 0; i < count; i++) {
+        // MVP-only reftype: funcref (0x70). Externref (0x6F) and any
+        // other reference types are out of scope.
+        uint8_t reftype = BUFFER_PULL(uint8_t, buffer);
+        CHECK(reftype == 0x70, "Unsupported reftype %02x", reftype);
 
-    uint8_t limit_type = BUFFER_PULL(uint8_t, buffer);
-    if (limit_type == 0x00) {
-        module->memory_min = BUFFER_PULL_U64(buffer);
-        module->memory_max = (UINT32_MAX / WASM_PAGE_SIZE) - 1;
-    } else if (limit_type == 0x01) {
-        module->memory_min = BUFFER_PULL_U64(buffer);
-        module->memory_max = BUFFER_PULL_U64(buffer);
-    } else {
-        CHECK_FAIL("Invalid limit %02x", limit_type);
+        uint8_t limit_type = BUFFER_PULL(uint8_t, buffer);
+        if (limit_type == 0x00) {
+            module->tables[i].min = BUFFER_PULL_U32(buffer);
+            module->tables[i].max = UINT32_MAX;
+        } else if (limit_type == 0x01) {
+            module->tables[i].min = BUFFER_PULL_U32(buffer);
+            module->tables[i].max = BUFFER_PULL_U32(buffer);
+        } else {
+            CHECK_FAIL("Invalid table limit %02x", limit_type);
+        }
+
+        CHECK(module->tables[i].min <= module->tables[i].max);
     }
-
-    // ensure the min is less or equals to the max
-    CHECK(module->memory_min <= module->memory_max);
-
-    // turn into bytes instead of pages
-    CHECK(!__builtin_mul_overflow(module->memory_min, WASM_PAGE_SIZE, &module->memory_min));
-    CHECK(!__builtin_mul_overflow(module->memory_max, WASM_PAGE_SIZE, &module->memory_max));
-
-    // ensure both stay within 4GB
-    CHECK(module->memory_min < SIZE_4GB);
-    CHECK(module->memory_max < SIZE_4GB);
 
     CHECK(buffer->len == 0);
 

@@ -49,6 +49,18 @@ cleanup:
     return err;
 }
 
+static wasm_type_t* wasm_get_func_type(jit_context_t* ctx, uint32_t funcidx) {
+    size_t imports_count = ctx->module->imports_count;
+    typeidx_t typeidx;
+    if (funcidx < imports_count) {
+        typeidx = ctx->module->imports[funcidx].index;
+    } else {
+        typeidx = ctx->module->functions[funcidx - imports_count];
+    }
+    wasm_type_t* type = &ctx->module->types[typeidx];
+    return type;
+}
+
 //----------------------------------------------------------------------------------------------------------------------
 // Parametric Instructions
 //----------------------------------------------------------------------------------------------------------------------
@@ -113,18 +125,6 @@ cleanup:
     return err;
 }
 
-
-static wasm_type_t* wasm_get_func_type(jit_context_t* ctx, uint32_t funcidx) {
-    size_t imports_count = ctx->module->imports_count;
-    typeidx_t typeidx;
-    if (funcidx < imports_count) {
-        typeidx = ctx->module->imports[funcidx].index;
-    } else {
-        typeidx = ctx->module->functions[funcidx - imports_count];
-    }
-    wasm_type_t* type = &ctx->module->types[typeidx];
-    return type;
-}
 
 //----------------------------------------------------------------------------------------------------------------------
 // Control Instructions
@@ -352,7 +352,7 @@ static wasm_err_t jit_wasm_call(spidir_builder_handle_t builder, buffer_t* code,
     wasm_type_t* type = wasm_get_func_type(ctx, funcidx);
     CHECK(type != nullptr);
 
-    // first two params are the hidden mem/state bases, pass them
+    // first two params are the hidden mem/state bases pass them
     // through unchanged from our own frame so the callee sees the same
     // module-instance state.
     size_t params_count = type->arg_types_count + 2;
@@ -590,6 +590,7 @@ cleanup:
     return err;
 }
 
+
 //----------------------------------------------------------------------------------------------------------------------
 // Memory instructions
 //----------------------------------------------------------------------------------------------------------------------
@@ -672,7 +673,7 @@ static wasm_err_t jit_wasm_load(spidir_builder_handle_t builder, buffer_t* code,
     // if we have an offset add it
     if (mem_arg.offset != 0) {
         // because we ensure the offset is at most 32bit, the addition will be 33bit, the runtime
-        // ensures an 8GB region per memory instance, so it will always trap no matter what value
+        // ensures an 8GB region per memory instance, so it will always trap no matter what value 
         // it gets in here
         CHECK(mem_arg.offset <= UINT32_MAX);
         offset = spidir_builder_build_iadd(builder, offset,
@@ -751,7 +752,7 @@ static wasm_err_t jit_wasm_store(spidir_builder_handle_t builder, buffer_t* code
     // if we have an offset add it
     if (mem_arg.offset != 0) {
         // because we ensure the offset is at most 32bit, the addition will be 33bit, the runtime
-        // ensures an 8GB region per memory instance, so it will always trap no matter what value
+        // ensures an 8GB region per memory instance, so it will always trap no matter what value 
         // it gets in here
         CHECK(mem_arg.offset <= UINT32_MAX);
         offset = spidir_builder_build_iadd(builder, offset,
@@ -828,7 +829,7 @@ static wasm_err_t jit_wasm_memory_copy(spidir_builder_handle_t builder, buffer_t
     spidir_value_t mem_base = spidir_builder_build_param_ref(builder, 0);
     spidir_value_t args[] = { mem_base, dst, src, n };
     spidir_builder_build_call(builder, helper, ARRAY_LENGTH(args), args);
-
+    
 cleanup:
     return err;
 }
@@ -850,7 +851,7 @@ static wasm_err_t jit_wasm_memory_fill(spidir_builder_handle_t builder, buffer_t
     spidir_value_t mem_base = spidir_builder_build_param_ref(builder, 0);
     spidir_value_t args[] = { mem_base, dst, val, n };
     spidir_builder_build_call(builder, helper, ARRAY_LENGTH(args), args);
-
+    
 cleanup:
     return err;
 }
@@ -979,6 +980,49 @@ cleanup:
     return err;
 }
 
+static wasm_err_t jit_wasm_cmpf(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint8_t opcode = ((uint8_t*)code->data)[-1];
+    JIT_TRACE("wasm: \t%s", g_wasm_opcode_names[opcode]);
+
+    // figure the exact type
+    spidir_value_type_t type;
+    switch (opcode) {
+        case 0x5B ... 0x60: type = SPIDIR_TYPE_F32; opcode -= 0x5B; break;
+        case 0x61 ... 0x66: type = SPIDIR_TYPE_F64; opcode -= 0x61; break;
+        default: CHECK_FAIL();
+    }
+
+    // get the args
+    spidir_value_t arg2 = JIT_POP(type);
+    spidir_value_t arg1 = JIT_POP(type);
+
+    // choose the compare, got gt kinds we just swap
+    spidir_fcmp_kind_t kind;
+    switch (opcode) {
+        case 0: kind = SPIDIR_FCMP_OEQ; break;
+        case 1: kind = SPIDIR_FCMP_UNE; break;
+        case 2: kind = SPIDIR_FCMP_OLT; break;
+        case 3: kind = SPIDIR_FCMP_OLT; SWAP(arg1, arg2); break;
+        case 4: kind = SPIDIR_FCMP_OLE; break;
+        case 5: kind = SPIDIR_FCMP_OLE; SWAP(arg1, arg2); break;
+        default: CHECK_FAIL();
+    }
+
+    // build the icmp, it always outputs i32
+    spidir_value_t value = spidir_builder_build_fcmp(builder,
+        kind, SPIDIR_TYPE_I32,
+        arg1, arg2
+    );
+
+    // push the result
+    JIT_PUSH(SPIDIR_TYPE_I32, value);
+
+cleanup:
+    return err;
+}
+
 // Integer-to-integer conversions: wrap, extend (signed/unsigned), and the
 // sign-extension-within-type ops. Skipping reinterpret_* because spidir has
 // no bitcast builder.
@@ -1038,49 +1082,6 @@ cleanup:
     return err;
 }
 
-static wasm_err_t jit_wasm_cmpf(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
-    wasm_err_t err = WASM_NO_ERROR;
-
-    uint8_t opcode = ((uint8_t*)code->data)[-1];
-    JIT_TRACE("wasm: \t%s", g_wasm_opcode_names[opcode]);
-
-    // figure the exact type
-    spidir_value_type_t type;
-    switch (opcode) {
-        case 0x5B ... 0x60: type = SPIDIR_TYPE_F32; opcode -= 0x5B; break;
-        case 0x61 ... 0x66: type = SPIDIR_TYPE_F64; opcode -= 0x61; break;
-        default: CHECK_FAIL();
-    }
-
-    // get the args
-    spidir_value_t arg2 = JIT_POP(type);
-    spidir_value_t arg1 = JIT_POP(type);
-
-    // choose the compare, got gt kinds we just swap
-    spidir_fcmp_kind_t kind;
-    switch (opcode) {
-        case 0: kind = SPIDIR_FCMP_OEQ; break;
-        case 1: kind = SPIDIR_FCMP_UNE; break;
-        case 2: kind = SPIDIR_FCMP_OLT; break;
-        case 3: kind = SPIDIR_FCMP_OLT; SWAP(arg1, arg2); break;
-        case 4: kind = SPIDIR_FCMP_OLE; break;
-        case 5: kind = SPIDIR_FCMP_OLE; SWAP(arg1, arg2); break;
-        default: CHECK_FAIL();
-    }
-
-    // build the icmp, it always outputs i32
-    spidir_value_t value = spidir_builder_build_fcmp(builder,
-        kind, SPIDIR_TYPE_I32,
-        arg1, arg2
-    );
-
-    // push the result
-    JIT_PUSH(SPIDIR_TYPE_I32, value);
-
-cleanup:
-    return err;
-}
-
 static wasm_err_t jit_wasm_itof(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -1132,37 +1133,6 @@ cleanup:
     return err;
 }
 
-static wasm_err_t jit_wasm_binopf(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
-    wasm_err_t err = WASM_NO_ERROR;
-
-    uint8_t opcode = ((uint8_t*)code->data)[-1];
-    JIT_TRACE("wasm: \t%s", g_wasm_opcode_names[opcode]);
-
-    spidir_value_type_t type;
-    switch (opcode) {
-        case 0x92 ... 0x95: type = SPIDIR_TYPE_F32; opcode -= 0x92; break;
-        case 0xA0 ... 0xA3: type = SPIDIR_TYPE_F64; opcode -= 0xA0; break;
-        default: CHECK_FAIL();
-    }
-
-    spidir_value_t arg2 = JIT_POP(type);
-    spidir_value_t arg1 = JIT_POP(type);
-
-    spidir_value_t result;
-    switch (opcode) {
-        case 0: result = spidir_builder_build_fadd(builder, arg1, arg2); break;
-        case 1: result = spidir_builder_build_fsub(builder, arg1, arg2); break;
-        case 2: result = spidir_builder_build_fmul(builder, arg1, arg2); break;
-        case 3: result = spidir_builder_build_fdiv(builder, arg1, arg2); break;
-        default: CHECK_FAIL();
-    }
-
-    JIT_PUSH(type, result);
-
-cleanup:
-    return err;
-}
-
 static wasm_err_t jit_wasm_shift(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -1192,6 +1162,37 @@ static wasm_err_t jit_wasm_shift(spidir_builder_handle_t builder, buffer_t* code
         case 0: result = spidir_builder_build_shl(builder, value, shift_amt); break;
         case 1: result = spidir_builder_build_ashr(builder, value, shift_amt); break;
         case 2: result = spidir_builder_build_lshr(builder, value, shift_amt); break;
+        default: CHECK_FAIL();
+    }
+
+    JIT_PUSH(type, result);
+
+cleanup:
+    return err;
+}
+
+static wasm_err_t jit_wasm_binopf(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint8_t opcode = ((uint8_t*)code->data)[-1];
+    JIT_TRACE("wasm: \t%s", g_wasm_opcode_names[opcode]);
+
+    spidir_value_type_t type;
+    switch (opcode) {
+        case 0x92 ... 0x95: type = SPIDIR_TYPE_F32; opcode -= 0x92; break;
+        case 0xA0 ... 0xA3: type = SPIDIR_TYPE_F64; opcode -= 0xA0; break;
+        default: CHECK_FAIL();
+    }
+
+    spidir_value_t arg2 = JIT_POP(type);
+    spidir_value_t arg1 = JIT_POP(type);
+
+    spidir_value_t result;
+    switch (opcode) {
+        case 0: result = spidir_builder_build_fadd(builder, arg1, arg2); break;
+        case 1: result = spidir_builder_build_fsub(builder, arg1, arg2); break;
+        case 2: result = spidir_builder_build_fmul(builder, arg1, arg2); break;
+        case 3: result = spidir_builder_build_fdiv(builder, arg1, arg2); break;
         default: CHECK_FAIL();
     }
 
@@ -1338,22 +1339,19 @@ const jit_instruction_t g_wasm_inst_jit_callbacks[0x100] = {
     [0x3F] = jit_wasm_memory_size,
     [0x40] = jit_wasm_memory_grow,
 
-    // Multi-byte prefix instructions
-    [0xFC] = jit_wasm_prefix_fc,
-
     // Numeric Instructions
     [0x41] = jit_wasm_i32_const,
     [0x42] = jit_wasm_i64_const,
+    [0x43] = jit_wasm_f32_const,
+    [0x44] = jit_wasm_f64_const,
     [0x45 ... 0x5A] = jit_wasm_cmpi,
+    [0x5B ... 0x66] = jit_wasm_cmpf,
     [0x6A ... 0x73] = jit_wasm_binopi,
     [0x74 ... 0x76] = jit_wasm_shift,
     [0x7C ... 0x85] = jit_wasm_binopi,
     [0x86 ... 0x88] = jit_wasm_shift,
     [0x92 ... 0x95] = jit_wasm_binopf,
     [0xA0 ... 0xA3] = jit_wasm_binopf,
-    [0x43] = jit_wasm_f32_const,
-    [0x44] = jit_wasm_f64_const,
-    [0x5B ... 0x66] = jit_wasm_cmpf,
 
     // Conversions
     [0xA7]          = jit_wasm_iconv,    // i32.wrap_i64
@@ -1363,4 +1361,7 @@ const jit_instruction_t g_wasm_inst_jit_callbacks[0x100] = {
     [0xB7 ... 0xBA] = jit_wasm_itof,     // f64.convert_i{32,64}_{s,u}
     [0xBB]          = jit_wasm_fconv,    // f64.promote_f32
     [0xC0 ... 0xC4] = jit_wasm_iconv,    // i{32,64}.extend{8,16,32}_s
+
+    // Multi-byte prefix instructions
+    [0xFC] = jit_wasm_prefix_fc,
 };

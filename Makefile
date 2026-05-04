@@ -15,6 +15,10 @@ CFLAGS 			?=
 # Build the host tool
 HOST 			?= y
 
+# Build with LLVM source-coverage instrumentation. Set indirectly via
+# `make coverage`; not intended for direct use.
+COVERAGE 		?=
+
 #-----------------------------------------------------------------------------------------------------------------------
 # General build flags
 #-----------------------------------------------------------------------------------------------------------------------
@@ -52,6 +56,11 @@ cflags-y += -g
 cflags-$(HOST) += -fsanitize=undefined,address
 ldflags-$(HOST) += -fsanitize=undefined,address
 
+# LLVM source-based coverage. Applied to libwasm and the host so the
+# `coverage` target can show which JIT code is exercised by the tests.
+cflags-$(COVERAGE) += -fprofile-instr-generate -fcoverage-mapping
+ldflags-$(COVERAGE) += -fprofile-instr-generate
+
 ldflags-y += -fuse-ld=lld
 
 PHONY += all
@@ -72,6 +81,29 @@ test:
 	$(MAKE) HOST=y
 	$(MAKE) -C tests OPTIMIZE=y
 	$(call cmd,runtests)
+
+# Coverage report: rebuild instrumented, run the test suite (capturing per-
+# process .profraw files), merge them, and surface a textual + HTML report
+# focused on src/ (libwasm — the JIT, module loader, helpers).
+COVERAGE_DIR := $(BUILD)/coverage
+
+PHONY += coverage
+coverage:
+	$(MAKE) HOST=y COVERAGE=y
+	$(MAKE) -C tests OPTIMIZE=y
+	rm -rf $(COVERAGE_DIR)
+	mkdir -p $(COVERAGE_DIR)
+	LLVM_PROFILE_FILE='$(abspath $(COVERAGE_DIR))/%p.profraw' uv run --script tests/test.py || true
+	@# Drive the ELF-emission path so jit/elf.c shows up in the report.
+	LLVM_PROFILE_FILE='$(abspath $(COVERAGE_DIR))/elf-%p.profraw' \
+	    $(BUILD)/main -m tests/build/mem --elf-output $(COVERAGE_DIR)/sample.elf >/dev/null 2>&1 || true
+	llvm-profdata merge -sparse $(COVERAGE_DIR)/*.profraw -o $(COVERAGE_DIR)/merged.profdata
+	@echo
+	llvm-cov report $(BUILD)/main -instr-profile=$(COVERAGE_DIR)/merged.profdata src/
+	llvm-cov show $(BUILD)/main -instr-profile=$(COVERAGE_DIR)/merged.profdata \
+	    -format=html -output-dir=$(COVERAGE_DIR)/html src/
+	@echo
+	@echo "HTML report: $(COVERAGE_DIR)/html/index.html"
 
 include host/Makefile
 include libs/spidir.mk

@@ -379,6 +379,10 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
                 target = jit_code + callee_entry.code_offset;
 
                 // we currently expect local functions to only ever have direct accesses
+                // indirect functions only exist as part of tables which are initialized
+                // in a different place
+                // NOTE: this assumes a direct call won't have a 64bit constant, which is
+                //       true without APX
                 CHECK(reloc->target_kind == SPIDIR_RELOC_X64_PC32);
 
             } else if (reloc->target_kind == SPIDIR_RELOC_TARGET_EXTERNAL_FUNCTION) {
@@ -486,7 +490,7 @@ static wasm_err_t jit_prepare_state(jit_context_t* ctx, wasm_module_jit_t* jit) 
     wasm_err_t err = WASM_NO_ERROR;
 
     ctx->globals = CALLOC(jit_global_t, ctx->module->globals_count);
-    CHECK(ctx->module->globals_count == 0 || ctx->globals != nullptr);
+    CHECK(ctx->globals != nullptr);
 
     size_t offset = 0;
     for (int i = 0; i < ctx->module->globals_count; i++) {
@@ -557,7 +561,7 @@ static wasm_err_t jit_build_state_init(
             uint32_t fidx = elem->funcs[j];
             CHECK(ctx->functions[fidx].inited);
 
-            // Indirect call slots must point at a real function.
+            // Indirect call slots must point at a real function. 
             // We currently only support targeting internal functions.
             // imports/externals would need their resolved address
             // baked into the table here too.
@@ -581,6 +585,8 @@ cleanup:
     return err;
 }
 
+
+
 wasm_err_t wasm_module_jit(wasm_module_t* module, wasm_module_jit_t* jit, wasm_jit_config_t* config) {
     wasm_err_t err = WASM_NO_ERROR;
     jit_context_t ctx = {
@@ -599,7 +605,7 @@ wasm_err_t wasm_module_jit(wasm_module_t* module, wasm_module_jit_t* jit, wasm_j
     ctx.functions = CALLOC(jit_function_t, module->functions_count + module->imports_count);
     CHECK(ctx.functions != nullptr);
 
-    // setup the runtime state buffer (globals)
+    // setup the runtime state buffer (globals + tables)
     RETHROW(jit_prepare_state(&ctx, jit));
 
     ctx.spidir = spidir_module_create();
