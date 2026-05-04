@@ -65,4 +65,5 @@ clean:
 	$(call cmd,clean)
 
 include libs/spidir.mk
+include src/Makefile
 include scripts/build.mk
