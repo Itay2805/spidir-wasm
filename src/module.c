@@ -54,6 +54,7 @@ void wasm_module_free(wasm_module_t* module) {
     wasm_host_free(module->types);
     wasm_host_free(module->imports);
     wasm_host_free(module->functions);
+    wasm_host_free(module->globals);
     wasm_host_free(module->exports);
     wasm_host_free(module->code);
 }
@@ -253,6 +254,76 @@ cleanup:
     return err;
 }
 
+static wasm_err_t wasm_parse_constant_expr(buffer_t* buffer, wasm_value_t* value) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    // get the expression
+    uint8_t byte = BUFFER_PULL(uint8_t, buffer);
+    switch (byte) {
+        case 0x41: {
+            value->kind = WASM_VALUE_TYPE_I32;
+            value->value.i32 = BUFFER_PULL_I32(buffer);
+        } break;
+
+        case 0x42: {
+            value->kind = WASM_VALUE_TYPE_I64;
+            value->value.i64 = BUFFER_PULL_I64(buffer);
+        } break;
+
+        case 0x43: {
+            value->kind = WASM_VALUE_TYPE_F32;
+            value->value.f32 = BUFFER_PULL(float, buffer);
+        } break;
+
+        case 0x44: {
+            value->kind = WASM_VALUE_TYPE_F64;
+            value->value.f64 = BUFFER_PULL(double, buffer);
+        } break;
+
+        default:
+            CHECK_FAIL("%x", byte);
+    }
+
+    // ensure we end up with expression end
+    CHECK(BUFFER_PULL(uint8_t, buffer) == 0x0B);
+
+cleanup:
+    return err;
+}
+
+wasm_err_t wasm_parse_global_section(wasm_module_t* module, buffer_t* buffer) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint32_t count = BUFFER_PULL_U32(buffer);
+    module->globals = CALLOC(wasm_global_t, count);
+    CHECK(module->globals != nullptr);
+    module->globals_count = count;
+
+    for (int i = 0; i < count; i++) {
+        wasm_value_type_t type;
+        RETHROW(buffer_pull_val_type(buffer, &type));
+        uint8_t mut = BUFFER_PULL(uint8_t, buffer);
+        CHECK(mut == 0x00 || mut == 0x01);
+
+        wasm_global_t global = {
+            .mutable = mut == 0x01
+        };
+
+        // parse the expression and ensure we get the correct
+        // type at the end of it
+        RETHROW(wasm_parse_constant_expr(buffer, &global.value));
+        CHECK(global.value.kind == type);
+
+        // append it
+        module->globals[i] = global;
+    }
+
+    CHECK(buffer->len == 0);
+
+cleanup:
+    return err;
+}
+
 static wasm_err_t wasm_parse_memory_section(wasm_module_t* module, buffer_t* buffer) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -317,6 +388,7 @@ static wasm_err_t wasm_parse_export_section(wasm_module_t* module, buffer_t* buf
         switch (byte) {
             case 0x00: CHECK(index < module->functions_count); kind = WASM_EXPORT_FUNC; break;
             case 0x02: CHECK(index == 0); kind = WASM_EXPORT_MEMORY; break;
+            case 0x03: CHECK(index < module->globals_count); kind = WASM_EXPORT_GLOBAL; break;
             default: CHECK_FAIL("Unknown export type %x (%s)", byte, name);
         }
 
@@ -394,6 +466,7 @@ wasm_err_t wasm_load_module(wasm_module_t* module, void* data, size_t size) {
             case WASM_SECTION_IMPORT: RETHROW(wasm_parse_import_section(module, contents)); break;
             case WASM_SECTION_FUNCTION: RETHROW(wasm_parse_function_section(module, contents)); break;
             case WASM_SECTION_MEMORY: RETHROW(wasm_parse_memory_section(module, contents)); break;
+            case WASM_SECTION_GLOBAL: RETHROW(wasm_parse_global_section(module, contents)); break;
             case WASM_SECTION_EXPORT: RETHROW(wasm_parse_export_section(module, contents)); break;
             case WASM_SECTION_CODE: RETHROW(wasm_parse_code_section(module, contents)); break;
 

@@ -32,6 +32,11 @@ typedef struct wasm_type {
     uint32_t result_types_count;
 } wasm_type_t;
 
+typedef struct wasm_global {
+    wasm_value_t value;
+    bool mutable;
+} wasm_global_t;
+
 typedef enum wasm_extern_type {
     WASM_EXTERN_FUNC,
     WASM_EXTERN_TABLE,
@@ -71,6 +76,7 @@ typedef uint32_t typeidx_t;
 typedef struct wasm_module {
     wasm_type_t* types;
     typeidx_t* functions;
+    wasm_global_t* globals;
     wasm_import_t* imports;
     wasm_export_t* exports;
 
@@ -82,6 +88,7 @@ typedef struct wasm_module {
 
     uint32_t types_count;
     uint32_t functions_count;
+    uint32_t globals_count;
     uint32_t imports_count;
     uint32_t exports_count;
 } wasm_module_t;
