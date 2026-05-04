@@ -61,4 +61,14 @@ const char* const g_wasm_opcode_names[256] = {
     [0x88] = "i64.shr_u",
     [0x89] = "i64.rotl",
     [0x8A] = "i64.rotr",
+
+    [0xA7] = "i32.wrap_i64",
+    [0xAC] = "i64.extend_s_i32",
+    [0xAD] = "i64.extend_u_i32",
+
+    [0xC0] = "i32.extend8_s",
+    [0xC1] = "i32.extend16_s",
+    [0xC2] = "i64.extend8_s",
+    [0xC3] = "i64.extend16_s",
+    [0xC4] = "i64.extend32_s",
 };
