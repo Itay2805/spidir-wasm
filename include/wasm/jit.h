@@ -18,6 +18,14 @@ typedef struct wasm_jit_config {
      * Should we run the spidir optimizations
      */
     bool optimize;
+
+    /**
+     * If set, the JIT emits an in-memory ELF describing the generated code.
+     * The buffer is exposed via wasm_jit_t::elf / elf_size and is suitable for
+     * the GDB JIT interface or for being written to disk and inspected in
+     * external tools like IDA.
+     */
+    bool emit_elf;
 } wasm_jit_config_t;
 
 typedef union wasm_jit_export {
@@ -48,6 +56,11 @@ typedef struct wasm_module_jit {
     // zero). Owned by the JIT and freed by wasm_module_jit_free; the host must
     // memcpy out before relying on it surviving.
     void* state_init;
+
+    // optional in-memory ELF describing the JIT'd code (only populated when
+    // wasm_jit_config_t::emit_elf was set).
+    void* elf;
+    size_t elf_size;
 } wasm_module_jit_t;
 
 wasm_err_t wasm_module_jit(wasm_module_t* module, wasm_module_jit_t* jitted_module, wasm_jit_config_t* config);

@@ -1,5 +1,6 @@
 #include "wasm/jit.h"
 
+#include "elf.h"
 #include "function.h"
 #include "jit_internal.h"
 #include "buffer.h"
@@ -54,8 +55,11 @@ void wasm_module_jit_free(wasm_module_jit_t* jit) {
         jit->binary = nullptr;
     }
     wasm_host_free(jit->exports);
+    wasm_host_free(jit->elf);
     wasm_host_free(jit->state_init);
     jit->exports = nullptr;
+    jit->elf = nullptr;
+    jit->elf_size = 0;
     jit->state_init = nullptr;
 }
 
@@ -146,6 +150,80 @@ typedef union code_map_entry {
     uint64_t value;
 } code_map_entry_t;
 
+// Build the in-memory ELF description of the JIT'd code. Called from
+// jit_emit_code after the final layout is known but before locking the
+// region. Symbol addresses use the runtime layout so GDB and IDA agree
+// with what is actually executing.
+static wasm_err_t jit_build_elf(
+    jit_context_t* ctx,
+    wasm_module_jit_t* jit,
+    wasm_jit_config_t* config,
+    void* jit_code, size_t code_size,
+    void* jit_rodata, size_t rodata_size,
+    spidir_function_t* functions, uint32_t* funcidxs, size_t funcs_count,
+    spidir_codegen_blob_handle_t* blobs,
+    hmap_t* code_map
+) {
+    wasm_err_t err = WASM_NO_ERROR;
+    vec(jit_elf_function_t) elf_funcs = {};
+
+    // One symbol per JIT'd internal function. If the function is exported we
+    // use the export name and the indirect-entry (endbr64) address so the
+    // symbol matches what callers actually target; otherwise we fall back to
+    // a generated `func<idx>` name pointing at the function code itself.
+    for (size_t i = 0; i < funcs_count; i++) {
+        code_map_entry_t entry = {};
+        CHECK(hmap_lookup(code_map, functions[i].id, &entry.value));
+        uint32_t blob_code_size = (uint32_t)spidir_codegen_blob_get_code_size(blobs[i]);
+
+        const char* export_name = nullptr;
+        for (int j = 0; j < ctx->module->exports_count; j++) {
+            wasm_export_t* exp = &ctx->module->exports[j];
+            if (exp->kind != WASM_EXPORT_FUNC) continue;
+            if (!ctx->functions[exp->index].inited) continue;
+
+            spidir_funcref_t fr = ctx->functions[exp->index].spidir;
+            if (!spidir_funcref_is_internal(fr)) continue;
+
+            if (spidir_funcref_get_internal(fr).id == functions[i].id) {
+                export_name = exp->name;
+                break;
+            }
+        }
+
+        jit_elf_function_t ef;
+        if (export_name != nullptr) {
+            ef = (jit_elf_function_t){
+                .name = export_name,
+                // 4 bytes earlier so the symbol covers the endbr64 indirect entry
+                .offset = entry.code_offset - 4,
+                .size = blob_code_size + 4,
+            };
+        } else {
+            ef = (jit_elf_function_t){
+                .wasm_funcidx = funcidxs[i],
+                .offset = entry.code_offset,
+                .size = blob_code_size,
+            };
+        }
+        vec_push(&elf_funcs, ef);
+    }
+
+    jit_elf_input_t elf_input = {
+        .code_addr = jit_code,
+        .code_size = code_size,
+        .rodata_addr = jit_rodata,
+        .rodata_size = rodata_size,
+        .funcs = elf_funcs.elements,
+        .funcs_count = elf_funcs.length,
+    };
+    RETHROW(jit_emit_elf(&elf_input, &jit->elf, &jit->elf_size));
+
+cleanup:
+    vec_free(&elf_funcs);
+    return err;
+}
+
 static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm_jit_config_t* config) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -156,6 +234,7 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
 
     vec(spidir_codegen_blob_handle_t) blobs = {};
     vec(spidir_function_t) functions = {};
+    vec(uint32_t) funcidxs = {};
 
     // maps
     hmap_t code_map = HMAP_INIT;
@@ -200,6 +279,7 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
         // it for easier lookups later
         vec_push(&blobs, blob);
         vec_push(&functions, func);
+        vec_push(&funcidxs, (uint32_t)i);
 
         //
         // constpool
@@ -226,6 +306,11 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
         };
         hmap_insert(&code_map, func.id, entry.value);
     }
+
+    // remember the used (pre-page-align) sizes so the ELF .text/.rodata
+    // sections describe only the actual content, not the trailing padding
+    size_t code_used_size = code_size;
+    size_t rodata_used_size = rodata_size;
 
     // align everything to page size
     size_t page_size = wasm_host_page_size();
@@ -358,6 +443,20 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
     // RX region below.
     RETHROW(jit_build_state_init(ctx, jit, jit_code, &code_map));
 
+    // optionally produce an in-memory ELF describing what we just laid out.
+    // Use the pre-page-align sizes so the .text/.rodata sections describe
+    // only the actual content, not the trailing 0xCC/zero padding.
+    if (config->emit_elf) {
+        RETHROW(jit_build_elf(
+            ctx, jit, config,
+            jit_code, code_used_size,
+            jit_rodata, rodata_used_size,
+            functions.elements, funcidxs.elements, functions.length,
+            blobs.elements,
+            &code_map
+        ));
+    }
+
     // we are finished with jitting, we can lock the region and
     // let everything use it
     CHECK(wasm_host_jit_lock(jit->binary, jit->rx_page_count, jit->ro_page_count));
@@ -374,6 +473,7 @@ cleanup:
     }
     vec_free(&blobs);
     vec_free(&functions);
+    vec_free(&funcidxs);
     hmap_free(&code_map);
 
     return err;

@@ -12,8 +12,11 @@
 #include <util/except.h>
 #include <spidir/log.h>
 
+#include "util/hmap.h"
 #include "wasm/error.h"
 #include "wasm/host.h"
+
+static hmap_t m_jit_map = HMAP_INIT;
 
 typedef enum option_type {
     // options with short version
@@ -26,6 +29,8 @@ typedef enum option_type {
 
     OPTION_LOG_LEVEL,
     OPTION_SPIDIR_DUMP,
+    OPTION_ELF_OUTPUT,
+    OPTION_GDB_JIT,
 } option_type_t;
 
 static struct option long_options[] = {
@@ -35,9 +40,71 @@ static struct option long_options[] = {
     { "log-level", required_argument, 0, OPTION_LOG_LEVEL },
 
     { "spidir-dump", optional_argument, 0, OPTION_SPIDIR_DUMP },
+    { "elf-output", required_argument, 0, OPTION_ELF_OUTPUT },
+    { "gdb-jit", no_argument, 0, OPTION_GDB_JIT },
 
     { 0, 0, 0, 0 },
 };
+
+// GDB JIT interface — see https://sourceware.org/gdb/current/onlinedocs/gdb.html/JIT-Interface.html
+typedef enum {
+    JIT_NOACTION = 0,
+    JIT_REGISTER_FN,
+    JIT_UNREGISTER_FN
+} jit_actions_t;
+
+struct jit_code_entry {
+    struct jit_code_entry *next_entry;
+    struct jit_code_entry *prev_entry;
+    const char *symfile_addr;
+    uint64_t symfile_size;
+};
+
+struct jit_descriptor {
+    uint32_t version;
+    uint32_t action_flag;
+    struct jit_code_entry *relevant_entry;
+    struct jit_code_entry *first_entry;
+};
+
+// GDB looks up these exact symbol names. The function must not be inlined or
+// optimized away — GDB sets a breakpoint on it.
+__attribute__((visibility("default")))
+struct jit_descriptor __jit_debug_descriptor = {
+    1,
+    0,
+    nullptr,
+    nullptr
+};
+
+__attribute__((noinline, visibility("default")))
+void __jit_debug_register_code(void) {
+    __asm__ volatile ("" ::: "memory");
+}
+
+static void register_with_gdb(void* elf, size_t elf_size) {
+    struct jit_code_entry* entry = calloc(1, sizeof(*entry));
+    if (entry == nullptr) {
+        return;
+    }
+
+    entry->symfile_addr = elf;
+    entry->symfile_size = elf_size;
+    entry->prev_entry = nullptr;
+
+    struct jit_code_entry* next_entry = __jit_debug_descriptor.first_entry;
+    entry->next_entry = next_entry;
+    if (next_entry != nullptr) {
+        next_entry->prev_entry = entry;
+    }
+
+    __jit_debug_descriptor.first_entry = entry;
+    __jit_debug_descriptor.relevant_entry = entry;
+
+    __jit_debug_descriptor.action_flag = JIT_REGISTER_FN;
+
+    __jit_debug_register_code();
+}
 
 static const char* spidir_log_level_to_string(spidir_log_level_t level) {
     switch (level) {
@@ -75,6 +142,8 @@ int main(int argc, char** argv) {
 
     char* module_path = nullptr;
     FILE* spidir_output_file = nullptr;
+    char* elf_output_path = nullptr;
+    bool gdb_jit = false;
 
     // enable logging and set them to warn by default
     spidir_log_init(stdout_log_callback);
@@ -105,6 +174,22 @@ int main(int argc, char** argv) {
                 config.optimize = false;
             } break;
 
+            case OPTION_ELF_OUTPUT: {
+                CHECK(elf_output_path == nullptr, "ELF output already specified");
+                elf_output_path = strdup(optarg);
+                CHECK(elf_output_path != nullptr);
+                // disk-saved ELFs need the actual code/rodata bytes so
+                // disassemblers like IDA have something to work on.
+                config.emit_elf = true;
+            } break;
+
+            case OPTION_GDB_JIT: {
+                // GDB reads bytes from live process memory; the ELF only
+                // needs metadata (sections, symbols).
+                gdb_jit = true;
+                config.emit_elf = true;
+            } break;
+
             case OPTION_SPIDIR_DUMP: {
                 TRACE("%s", optarg);
                 if (optarg == nullptr) {
@@ -133,6 +218,8 @@ int main(int argc, char** argv) {
                 TRACE(" -d | --debug                       don't perform jit optimizations");
                 TRACE("      --log-level <level>           set the log level (0=none, 1=error, 2=warn, 3=info, debug=4, trace=5)");
                 TRACE("      --spidir-dump <file>          dump the spidir output into a file (use `-` for stdout)");
+                TRACE("      --elf-output <file>           write an ELF describing the JIT'd code to a file");
+                TRACE("      --gdb-jit                     register the JIT'd code with GDB via the JIT interface");
                 used_help = true;
             } break;
 
@@ -178,6 +265,23 @@ int main(int argc, char** argv) {
 
     // jit the module
     RETHROW(wasm_module_jit(&m_module, &m_module_jit, &config));
+
+    // optionally write the in-memory ELF to disk for external inspection
+    if (elf_output_path != nullptr) {
+        CHECK(m_module_jit.elf != nullptr);
+        FILE* f = fopen(elf_output_path, "wb");
+        CHECK(f != nullptr, "%s: %s", strerror(errno), elf_output_path);
+        CHECK(fwrite(m_module_jit.elf, m_module_jit.elf_size, 1, f) == 1, "%s", strerror(errno));
+        fclose(f);
+        free(elf_output_path);
+        elf_output_path = nullptr;
+    }
+
+    // optionally hand the same ELF to GDB
+    if (gdb_jit) {
+        CHECK(m_module_jit.elf != nullptr);
+        register_with_gdb(m_module_jit.elf, m_module_jit.elf_size);
+    }
 
     // allocate the runtime state buffer (globals + tables) and seed it
     // with the JIT-built initializer so funcref tables come up populated
@@ -243,6 +347,9 @@ cleanup:
     wasm_module_jit_free(&m_module_jit);
     wasm_module_free(&m_module);
     free(module_path);
+    free(elf_output_path);
+
+    hmap_free(&m_jit_map);
 
     free(state_base);
     if (m_memory_base != nullptr && m_memory_base != MAP_FAILED) {
@@ -332,6 +439,14 @@ void wasm_host_free(void* ptr) {
 size_t wasm_host_page_size(void) {
     return 4096;
 }
+
+typedef union jit_map_entry {
+    uint64_t value;
+    struct {
+        uint32_t rx_page_count;
+        uint32_t ro_page_count;
+    };
+} jit_map_entry_t;
 
 void* wasm_host_jit_alloc(size_t rx_page_count, size_t ro_page_count) {
     void* ptr = mmap(nullptr, (rx_page_count + ro_page_count) * 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);

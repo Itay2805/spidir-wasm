@@ -1,5 +1,6 @@
 libs-y += libwasm
 
+libwasm-y += src/jit/elf.c
 libwasm-y += src/jit/function.c
 libwasm-y += src/jit/helpers.c
 libwasm-y += src/jit/inst.c
