@@ -14,6 +14,10 @@ static void helper_memory_fill(void* mem_base, uint32_t d, uint32_t val, uint32_
     memset((char*)mem_base + d, (uint8_t)val, n);
 }
 
+static void helper_trap(void) {
+    __builtin_trap();
+}
+
 typedef struct helper_def {
     const char* const name;
     void* const address;
@@ -46,6 +50,13 @@ static const helper_def_t g_helper_defs[JIT_HELPER_COUNT] = {
             SPIDIR_TYPE_I32, // val
             SPIDIR_TYPE_I32, // n
         },
+    },
+    [JIT_HELPER_TRAP] = {
+        .name = "trap",
+        .address = helper_trap,
+        .ret_type = SPIDIR_TYPE_NONE,
+        .arg_count = 0,
+        .arg_types = nullptr,
     },
 };
 

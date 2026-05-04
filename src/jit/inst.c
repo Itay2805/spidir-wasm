@@ -33,6 +33,22 @@ void jit_free_label(jit_label_t* label) {
     vec_free(&label->stack);
 }
 
+// Emit a runtime trap at the current insertion point. Lowering goes
+// through JIT_HELPER_TRAP rather than spidir's `unreachable` so the
+// optimizer doesn't get to delete the incoming branch — extern calls
+// have unknown side effects, so spidir is forced to keep this path.
+// We still terminate the block with `unreachable` afterwards because
+// the helper is `noreturn` from our perspective.
+static wasm_err_t jit_emit_trap(spidir_builder_handle_t builder, jit_context_t* ctx) {
+    wasm_err_t err = WASM_NO_ERROR;
+    spidir_funcref_t trap;
+    RETHROW(jit_get_helper(ctx, JIT_HELPER_TRAP, &trap));
+    spidir_builder_build_call(builder, trap, 0, nullptr);
+    spidir_builder_build_unreachable(builder);
+cleanup:
+    return err;
+}
+
 //----------------------------------------------------------------------------------------------------------------------
 // Parametric Instructions
 //----------------------------------------------------------------------------------------------------------------------
@@ -41,7 +57,7 @@ static wasm_err_t jit_wasm_unreachable(spidir_builder_handle_t builder, buffer_t
     wasm_err_t err = WASM_NO_ERROR;
 
     JIT_TRACE("wasm: \tunreachable");
-    spidir_builder_build_unreachable(builder);
+    RETHROW(jit_emit_trap(builder, ctx));
     label->terminated = true;
 
 cleanup:
@@ -399,12 +415,10 @@ static wasm_err_t jit_wasm_call_indirect(spidir_builder_handle_t builder, buffer
     spidir_block_t trap_block = spidir_builder_create_block(builder);
     spidir_builder_build_brcond(builder, in_bounds, ok_block, trap_block);
 
-    // out-of-bounds path: emit a real trap. The proper trap helper
-    // arrives with the helper infrastructure commit; until then we
-    // rely on spidir's build_unreachable and accept that the optimizer
-    // could in principle delete the incoming branch.
+    // out-of-bounds path: emit a real trap call so the optimizer
+    // can't eliminate the incoming branch
     spidir_builder_set_block(builder, trap_block);
-    spidir_builder_build_unreachable(builder);
+    RETHROW(jit_emit_trap(builder, ctx));
 
     // in-bounds path: compute &state_base[table.offset + idx*sizeof(void*)]
     spidir_builder_set_block(builder, ok_block);
