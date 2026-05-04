@@ -2,6 +2,7 @@
 
 #include "wasm/wasm.h"
 
+#include "helpers.h"
 #include "util/vec.h"
 #include "util/except.h"
 #include "spidir/module.h"
@@ -48,6 +49,12 @@ typedef struct jit_context {
 
     // queue of functions to do
     function_queue_t queue;
+
+    // Lazy registry of JIT runtime helpers. Filled on first call to
+    // jit_get_helper(kind); the relocation applier resolves the spidir
+    // extern function id back to the host C address via this table.
+    spidir_extern_function_t helpers[JIT_HELPER_COUNT];
+    bool helpers_inited[JIT_HELPER_COUNT];
 } jit_context_t;
 
 static inline spidir_value_type_t jit_get_spidir_value_type(wasm_value_type_t type) {

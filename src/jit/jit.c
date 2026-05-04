@@ -296,10 +296,14 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
                 // we currently expect local functions to only ever have direct accesses
                 CHECK(reloc->target_kind == SPIDIR_RELOC_X64_PC32);
 
+            } else if (reloc->target_kind == SPIDIR_RELOC_TARGET_EXTERNAL_FUNCTION) {
+                // For now, externals are only used to call JIT helpers.
+                // Wasm imports use the same target kind but aren't yet
+                // resolvable.
+                target = jit_helper_lookup_address(ctx, reloc->target.external.id);
+                CHECK(target != nullptr);
+
             } else {
-                // External-function relocations only become resolvable
-                // once we have the runtime helper registry — until then
-                // any module that needs one is rejected here.
                 CHECK_FAIL();
             }
 
