@@ -31,6 +31,71 @@ void jit_free_label(jit_label_t* label) {
 }
 
 //----------------------------------------------------------------------------------------------------------------------
+// Parametric Instructions
+//----------------------------------------------------------------------------------------------------------------------
+
+static wasm_err_t jit_wasm_unreachable(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    JIT_TRACE("wasm: \tunreachable");
+    spidir_builder_build_unreachable(builder);
+    label->terminated = true;
+
+cleanup:
+    return err;
+}
+
+static wasm_err_t jit_wasm_nop(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    JIT_TRACE("wasm: \tnop");
+
+cleanup:
+    return err;
+}
+
+static wasm_err_t jit_wasm_drop(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    JIT_TRACE("wasm: \tdrop");
+    CHECK(label->stack.length >= 1);
+    vec_pop(&label->stack);
+
+cleanup:
+    return err;
+}
+
+static wasm_err_t jit_wasm_select(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    JIT_TRACE("wasm: \tselect");
+
+    spidir_value_t c = JIT_POP(SPIDIR_TYPE_I32);
+    jit_value_t val2 = vec_pop(&label->stack);
+    jit_value_t val1 = vec_pop(&label->stack);
+    CHECK(val1.type == val2.type);
+
+    // prepare the next block
+    spidir_block_t next_block = spidir_builder_create_block(builder);
+
+    // we are going to use a brcond, if its zero it will take val1 and if its
+    // non-zero it will take val2
+    spidir_value_t values[] = { val1.value, val2.value };
+    spidir_builder_build_brcond(builder, c, next_block, next_block);
+
+    // setup the continuation
+    spidir_builder_set_block(builder, next_block);
+    spidir_value_t value = spidir_builder_build_phi(builder, val1.type, 2, values, NULL);
+
+    // and push it
+    JIT_PUSH(val1.type, value);
+
+cleanup:
+    return err;
+}
+
+
+//----------------------------------------------------------------------------------------------------------------------
 // Control Instructions
 //----------------------------------------------------------------------------------------------------------------------
 
@@ -106,6 +171,12 @@ cleanup:
 
 const jit_instruction_t g_wasm_inst_jit_callbacks[0x100] = {
     [0x0B] = jit_wasm_end,
+
+    // Parametric Instructions
+    [0x00] = jit_wasm_unreachable,
+    [0x01] = jit_wasm_nop,
+    [0x1A] = jit_wasm_drop,
+    [0x1B] = jit_wasm_select,
 
     // Control Instructions
     [0x0F] = jit_wasm_return,
