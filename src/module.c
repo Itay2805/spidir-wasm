@@ -51,11 +51,17 @@ void wasm_module_free(wasm_module_t* module) {
         wasm_host_free(module->exports[i].name);
     }
 
+    for (int i = 0; i < module->elems_count; i++) {
+        wasm_host_free(module->elems[i].funcs);
+    }
+
     wasm_host_free(module->types);
     wasm_host_free(module->imports);
     wasm_host_free(module->functions);
     wasm_host_free(module->globals);
     wasm_host_free(module->exports);
+    wasm_host_free(module->tables);
+    wasm_host_free(module->elems);
     wasm_host_free(module->code);
 }
 
@@ -254,6 +260,40 @@ cleanup:
     return err;
 }
 
+static wasm_err_t wasm_parse_table_section(wasm_module_t* module, buffer_t* buffer) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint32_t count = BUFFER_PULL_U32(buffer);
+    module->tables = CALLOC(wasm_table_t, count);
+    CHECK(module->tables != nullptr);
+    module->tables_count = count;
+
+    for (int i = 0; i < count; i++) {
+        // MVP-only reftype: funcref (0x70). Externref (0x6F) and any
+        // other reference types are out of scope.
+        uint8_t reftype = BUFFER_PULL(uint8_t, buffer);
+        CHECK(reftype == 0x70, "Unsupported reftype %02x", reftype);
+
+        uint8_t limit_type = BUFFER_PULL(uint8_t, buffer);
+        if (limit_type == 0x00) {
+            module->tables[i].min = BUFFER_PULL_U32(buffer);
+            module->tables[i].max = UINT32_MAX;
+        } else if (limit_type == 0x01) {
+            module->tables[i].min = BUFFER_PULL_U32(buffer);
+            module->tables[i].max = BUFFER_PULL_U32(buffer);
+        } else {
+            CHECK_FAIL("Invalid table limit %02x", limit_type);
+        }
+
+        CHECK(module->tables[i].min <= module->tables[i].max);
+    }
+
+    CHECK(buffer->len == 0);
+
+cleanup:
+    return err;
+}
+
 static wasm_err_t wasm_parse_constant_expr(buffer_t* buffer, wasm_value_t* value) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -361,6 +401,54 @@ cleanup:
     return err;
 }
 
+// Parses an active funcref element segment of the form supported by MVP:
+// kind 0 = (i32.const offset) vec(funcidx). Other kinds (passive, decla-
+// rative, expr-vector, externref) are intentionally rejected so unknown
+// shapes produce a clear error rather than a silent miscompile.
+static wasm_err_t wasm_parse_element_section(wasm_module_t* module, buffer_t* buffer) {
+    wasm_err_t err = WASM_NO_ERROR;
+    uint32_t* funcs = nullptr;
+
+    uint32_t count = BUFFER_PULL_U32(buffer);
+    module->elems = CALLOC(wasm_elem_segment_t, count);
+    CHECK(module->elems != nullptr);
+    module->elems_count = count;
+
+    for (int i = 0; i < count; i++) {
+        uint32_t kind = BUFFER_PULL_U32(buffer);
+        CHECK(kind == 0, "Unsupported elem segment kind %u", kind);
+
+        // active segment, default tableidx 0, offset is a constant expr
+        wasm_value_t offset_expr = {};
+        RETHROW(wasm_parse_constant_expr(buffer, &offset_expr));
+        CHECK(offset_expr.kind == WASM_VALUE_TYPE_I32);
+
+        uint32_t funcs_count = BUFFER_PULL_U32(buffer);
+        funcs = CALLOC(uint32_t, funcs_count);
+        CHECK(funcs != nullptr);
+
+        for (int j = 0; j < funcs_count; j++) {
+            uint32_t fidx = BUFFER_PULL_U32(buffer);
+            CHECK(fidx < module->functions_count + module->imports_count);
+            funcs[j] = fidx;
+        }
+
+        module->elems[i] = (wasm_elem_segment_t){
+            .tableidx = 0,
+            .offset = (uint32_t)offset_expr.value.i32,
+            .funcs_count = funcs_count,
+            .funcs = funcs,
+        };
+        funcs = nullptr;
+    }
+
+    CHECK(buffer->len == 0);
+
+cleanup:
+    wasm_host_free(funcs);
+    return err;
+}
+
 static wasm_err_t wasm_parse_export_section(wasm_module_t* module, buffer_t* buffer) {
     wasm_err_t err = WASM_NO_ERROR;
     char* name = nullptr;
@@ -465,9 +553,11 @@ wasm_err_t wasm_load_module(wasm_module_t* module, void* data, size_t size) {
             case WASM_SECTION_TYPE: RETHROW(wasm_parse_type_section(module, contents)); break;
             case WASM_SECTION_IMPORT: RETHROW(wasm_parse_import_section(module, contents)); break;
             case WASM_SECTION_FUNCTION: RETHROW(wasm_parse_function_section(module, contents)); break;
+            case WASM_SECTION_TABLE: RETHROW(wasm_parse_table_section(module, contents)); break;
             case WASM_SECTION_MEMORY: RETHROW(wasm_parse_memory_section(module, contents)); break;
             case WASM_SECTION_GLOBAL: RETHROW(wasm_parse_global_section(module, contents)); break;
             case WASM_SECTION_EXPORT: RETHROW(wasm_parse_export_section(module, contents)); break;
+            case WASM_SECTION_ELEMENT: RETHROW(wasm_parse_element_section(module, contents)); break;
             case WASM_SECTION_CODE: RETHROW(wasm_parse_code_section(module, contents)); break;
 
             default: {
