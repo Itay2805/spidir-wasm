@@ -146,20 +146,22 @@ static wasm_err_t jit_wasm_call(spidir_builder_handle_t builder, buffer_t* code,
     wasm_type_t* type = wasm_get_func_type(ctx, funcidx);
     CHECK(type != nullptr);
 
-    // first param is the hidden mem base, pass it through unchanged
-    // from our own frame so the callee sees the same module-instance state.
-    size_t params_count = type->arg_types_count + 1;
+    // first two params are the hidden mem/state bases, pass them
+    // through unchanged from our own frame so the callee sees the same
+    // module-instance state.
+    size_t params_count = type->arg_types_count + 2;
     params = CALLOC(spidir_value_t, params_count);
     CHECK(params != nullptr);
 
     params[0] = spidir_builder_build_param_ref(builder, 0);
+    params[1] = spidir_builder_build_param_ref(builder, 1);
 
     // pop the rest of the args from the stack
     for (int i = 0; i < type->arg_types_count; i++) {
         size_t arg_index = type->arg_types_count - i - 1;
         spidir_value_type_t stype = jit_get_spidir_value_type(type->arg_types[arg_index]);
         spidir_value_t value = JIT_POP(stype);
-        params[arg_index + 1] = value;
+        params[arg_index + 2] = value;
     }
 
     // perform the call
@@ -219,6 +221,70 @@ static wasm_err_t jit_wasm_local_tee(spidir_builder_handle_t builder, buffer_t* 
     spidir_value_t value = JIT_POP(value_type);
     func->locals.elements[index].value = value;
     JIT_PUSH(value_type, value);
+
+cleanup:
+    return err;
+}
+
+static wasm_err_t jit_wasm_global_get(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint32_t index = BUFFER_PULL_U32(code);
+    JIT_TRACE("wasm: \tglobal.get %d", index);
+    CHECK(index < ctx->module->globals_count);
+
+    spidir_value_type_t value_type = ctx->globals[index].type;
+
+    spidir_value_t value = SPIDIR_VALUE_INVALID;
+    if (ctx->globals[index].offset == -1) {
+        CHECK_FAIL("TODO: immutable globals");
+
+    } else {
+        // get the pointer to the global data
+        spidir_value_t globals_base = spidir_builder_build_param_ref(builder, 1);
+        globals_base = spidir_builder_build_ptroff(builder, globals_base,
+            spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, ctx->globals[index].offset));
+
+        // read it
+        value = spidir_builder_build_load(
+            builder,
+            jit_get_spidir_mem_size(value_type),
+            value_type,
+            globals_base
+        );
+    }
+
+    // and push
+    JIT_PUSH(value_type, value);
+
+cleanup:
+    return err;
+}
+
+static wasm_err_t jit_wasm_global_set(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint32_t index = BUFFER_PULL_U32(code);
+    JIT_TRACE("wasm: \tglobal.set %d", index);
+    CHECK(index < ctx->module->globals_count);
+
+    // ensure this is not an immutable value
+    CHECK(ctx->globals[index].offset != -1);
+
+    // get the pointer to the global data
+    spidir_value_t globals_base = spidir_builder_build_param_ref(builder, 1);
+    globals_base = spidir_builder_build_ptroff(builder, globals_base,
+        spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, ctx->globals[index].offset));
+
+    // read it
+    spidir_value_type_t value_type = ctx->globals[index].type;
+    spidir_value_t value = JIT_POP(value_type);
+    spidir_builder_build_store(
+        builder,
+        jit_get_spidir_mem_size(value_type),
+        value,
+        globals_base
+    );
 
 cleanup:
     return err;
@@ -649,6 +715,8 @@ const jit_instruction_t g_wasm_inst_jit_callbacks[0x100] = {
     [0x20] = jit_wasm_local_get,
     [0x21] = jit_wasm_local_set,
     [0x22] = jit_wasm_local_tee,
+    [0x23] = jit_wasm_global_get,
+    [0x24] = jit_wasm_global_set,
 
     // Numeric Instructions
     [0x41] = jit_wasm_i32_const,
