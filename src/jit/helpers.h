@@ -8,6 +8,7 @@ typedef struct jit_context jit_context_t;
 typedef enum jit_helper_kind {
     JIT_HELPER_MEMORY_COPY,
     JIT_HELPER_MEMORY_FILL,
+    JIT_HELPER_TRAP,
     JIT_HELPER_COUNT,
 } jit_helper_kind_t;
 
