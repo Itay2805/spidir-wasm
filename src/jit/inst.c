@@ -141,6 +141,53 @@ cleanup:
     return err;
 }
 
+static wasm_err_t jit_wasm_loop(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    RETHROW(jit_wasm_pull_block_type(code));
+    JIT_TRACE("wasm: \tloop");
+
+    // append a new label
+    jit_label_t* new_label = vec_add(&func->labels, 1);
+    memset(new_label, 0, sizeof(*new_label));
+
+    // this is the loop block, we enter it right now
+    new_label->block = spidir_builder_create_block(builder);
+    spidir_builder_build_branch(builder, new_label->block);
+    spidir_builder_set_block(builder, new_label->block);
+
+    // this is a loop
+    new_label->loop = true;
+
+    // we need to prepare the locals of the label with phis from the get-go,
+    // because a loop has backwards jumps so we can't know ahead of time
+    // what will change
+
+    new_label->locals_values = CALLOC(spidir_value_t, func->locals.length);
+    CHECK(new_label->locals_values != nullptr);
+    new_label->locals_phis = CALLOC(spidir_phi_t, func->locals.length);
+    CHECK(new_label->locals_phis != nullptr);
+
+    // we have an existing branch, check if we need any phis
+    for (int i = 0; i < func->locals.length; i++) {
+        // we mark as invalid to ensure that in the prepare_branch we will
+        // always add to the phi, this is required because the values are
+        // set in-stone at the entry point
+        new_label->locals_values[i] = SPIDIR_VALUE_INVALID;
+
+        // create the phi, update the local value directly, we ensure
+        // to add it as input obviously
+        func->locals.elements[i].value = spidir_builder_build_phi(builder,
+            func->locals.elements[i].type,
+            1, &func->locals.elements[i].value,
+            &new_label->locals_phis[i]
+        );
+    }
+
+cleanup:
+    return err;
+}
+
 static wasm_err_t jit_wasm_prepare_branch(spidir_builder_handle_t builder, jit_function_ctx_t* func, jit_label_t* target) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -995,6 +1042,9 @@ static wasm_err_t jit_wasm_end(spidir_builder_handle_t builder, buffer_t* code, 
     JIT_TRACE("wasm: \tend");
 
     if (func->labels.length == 1) {
+        // can't be a loop
+        CHECK(!label->loop);
+
         if (!label->terminated) {
             // this is a fallthrough from the entire function,
             // handle it like a return
@@ -1005,7 +1055,7 @@ static wasm_err_t jit_wasm_end(spidir_builder_handle_t builder, buffer_t* code, 
             spidir_builder_build_return(builder, value);
         }
 
-    } else {
+    } else if (!label->loop) {
         if (!label->terminated) {
             // handle fallthrough from a block into its label
             RETHROW(jit_wasm_prepare_branch(builder, func, label));
@@ -1020,6 +1070,19 @@ static wasm_err_t jit_wasm_end(spidir_builder_handle_t builder, buffer_t* code, 
 
         // and use the new block
         spidir_builder_set_block(builder, label->block);
+    } else {
+        spidir_block_t next_block = spidir_builder_create_block(builder);
+
+        if (!label->terminated) {
+            // if not terminated fallthrough
+            spidir_builder_build_branch(builder, next_block);
+        }
+
+        // we continue with the locals that we have currently because
+        // this is a fallthrough from a loop (which is the only exit
+        // point of the loop)
+
+        spidir_builder_set_block(builder, next_block);
     }
 
     // stack must be empty at this point
@@ -1045,6 +1108,7 @@ const jit_instruction_t g_wasm_inst_jit_callbacks[0x100] = {
 
     // Control Instructions
     [0x02] = jit_wasm_block,
+    [0x03] = jit_wasm_loop,
     [0x0C] = jit_wasm_br,
     [0x0D] = jit_wasm_br_if,
     [0x0F] = jit_wasm_return,
