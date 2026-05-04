@@ -1,5 +1,10 @@
 libs-y += libwasm
 
+libwasm-y += src/jit/function.c
+libwasm-y += src/jit/inst.c
+libwasm-y += src/jit/jit.c
+libwasm-y += src/jit/opcodes.c
+libwasm-y += src/util/hmap.c
 libwasm-y += src/util/vec.c
 libwasm-y += src/buffer.c
 libwasm-y += src/module.c

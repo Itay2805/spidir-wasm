@@ -64,6 +64,16 @@ PHONY += clean
 clean:
 	$(call cmd,clean)
 
+quiet_cmd_runtests = TEST    tests/build
+      cmd_runtests = uv run --script tests/test.py
+
+PHONY += test
+test:
+	$(MAKE) HOST=y
+	$(MAKE) -C tests OPTIMIZE=y
+	$(call cmd,runtests)
+
+include host/Makefile
 include libs/spidir.mk
 include src/Makefile
 include scripts/build.mk
