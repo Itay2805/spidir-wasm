@@ -770,6 +770,46 @@ cleanup:
     return err;
 }
 
+static wasm_err_t jit_wasm_memory_size(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    // for now we don't have multi-memory support, so it is required to be at zero
+    CHECK(BUFFER_PULL(uint8_t, code) == 0);
+    JIT_TRACE("wasm: \tmemory.size");
+
+    spidir_funcref_t helper;
+    RETHROW(jit_get_helper(ctx, JIT_HELPER_MEMORY_SIZE, &helper));
+
+    spidir_value_t mem_base = spidir_builder_build_param_ref(builder, 0);
+    spidir_value_t args[] = { mem_base };
+    spidir_value_t result = spidir_builder_build_call(builder, helper, ARRAY_LENGTH(args), args);
+    JIT_PUSH(SPIDIR_TYPE_I32, result);
+
+cleanup:
+    return err;
+}
+
+static wasm_err_t jit_wasm_memory_grow(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    // for now we don't have multi-memory support, so it is required to be at zero
+    CHECK(BUFFER_PULL(uint8_t, code) == 0);
+    JIT_TRACE("wasm: \tmemory.grow");
+
+    spidir_value_t n = JIT_POP(SPIDIR_TYPE_I32);
+
+    spidir_funcref_t helper;
+    RETHROW(jit_get_helper(ctx, JIT_HELPER_MEMORY_GROW, &helper));
+
+    spidir_value_t mem_base = spidir_builder_build_param_ref(builder, 0);
+    spidir_value_t args[] = { mem_base, n };
+    spidir_value_t result = spidir_builder_build_call(builder, helper, ARRAY_LENGTH(args), args);
+    JIT_PUSH(SPIDIR_TYPE_I32, result);
+
+cleanup:
+    return err;
+}
+
 static wasm_err_t jit_wasm_memory_copy(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -1295,6 +1335,8 @@ const jit_instruction_t g_wasm_inst_jit_callbacks[0x100] = {
     // Memory Instructions
     [0x28 ... 0x35] = jit_wasm_load,
     [0x36 ... 0x3E] = jit_wasm_store,
+    [0x3F] = jit_wasm_memory_size,
+    [0x40] = jit_wasm_memory_grow,
 
     // Multi-byte prefix instructions
     [0xFC] = jit_wasm_prefix_fc,
