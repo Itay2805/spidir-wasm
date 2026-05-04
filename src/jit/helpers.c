@@ -27,6 +27,25 @@ typedef struct helper_def {
 } helper_def_t;
 
 static const helper_def_t g_helper_defs[JIT_HELPER_COUNT] = {
+    [JIT_HELPER_MEMORY_SIZE] = {
+        .name = "memory.size",
+        .address = wasm_host_memory_size,
+        .ret_type = SPIDIR_TYPE_I32,
+        .arg_count = 1,
+        .arg_types = (const spidir_value_type_t[]){
+            SPIDIR_TYPE_PTR,
+        }
+    },
+    [JIT_HELPER_MEMORY_GROW] = {
+        .name = "memory.grow",
+        .address = wasm_host_memory_grow,
+        .ret_type = SPIDIR_TYPE_I32,
+        .arg_count = 2,
+        .arg_types = (const spidir_value_type_t[]){
+            SPIDIR_TYPE_PTR,
+            SPIDIR_TYPE_I32,
+        }
+    },
     [JIT_HELPER_MEMORY_COPY] = (const helper_def_t){
         .name = "memory.copy",
         .address = helper_memory_copy,

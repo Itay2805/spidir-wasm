@@ -29,6 +29,27 @@ void* wasm_host_realloc(void* ptr, size_t new_size);
 void wasm_host_free(void* ptr);
 
 /**
+ * The amount size of the current memory instance. In page count
+ *
+ * @param memory_base       [IN] the base of memory
+ */
+int32_t wasm_host_memory_size(void* memory_base);
+
+/**
+ * Grow the memory instance as given into a wasm function, directly called by memory.grow.
+ *
+ * Returns the old page count. Or -1 if the operation failed.
+ *
+ * NOTE: the memory base must stay the same
+ *
+ * TODO: support for returning a different memory base
+ *
+ * @param memory_base       [IN] The base of memory
+ * @param new_page_count    [IN] The new page count
+ */
+int32_t wasm_host_memory_grow(void* memory_base, int32_t new_page_count);
+
+/**
  * Allocate a contig region of memory, initially mapped as rw. After the
  * runtime calls wasm_host_jit_lock, it should turn into rx_page_count and
  * ro_page_count of rx pages and ro pages respectively.

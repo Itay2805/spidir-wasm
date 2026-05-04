@@ -64,6 +64,7 @@ static spidir_dump_status_t spidir_dump_callback(const char* data, size_t size, 
 static wasm_module_t m_module = {};
 static wasm_module_jit_t m_module_jit = {};
 static void* m_memory_base = nullptr;
+static size_t m_memory_size = 0;
 
 int main(int argc, char** argv) {
     wasm_err_t err = WASM_NO_ERROR;
@@ -204,6 +205,7 @@ int main(int argc, char** argv) {
     // from that mapped the first x bytes (skip when the module declares no
     // memory — modules that never touch memory never read this region)
     if (m_module.memory_min != 0) {
+        m_memory_size = m_module.memory_min;
         void* mapped = mmap(
             m_memory_base,
             m_module.memory_min,
@@ -265,6 +267,39 @@ void wasm_host_snprintf(char* buffer, size_t len, const char* fmt, ...) {
     va_start(args, fmt);
     vsnprintf(buffer, len, fmt, args);
     va_end(args);
+}
+
+int32_t wasm_host_memory_size(void* memory_base) {
+    return m_memory_size / WASM_PAGE_SIZE;
+}
+
+int32_t wasm_host_memory_grow(void* memory_base, int32_t new_page_count) {
+    if (new_page_count < 0) return -1;
+
+    // Spec: refuse if growth would exceed the declared max. The size
+    // increase happens only along the way to a successful mmap, so the
+    // -1 return path leaves m_memory_size untouched.
+    size_t old_count = m_memory_size / WASM_PAGE_SIZE;
+    size_t new_count = old_count + (size_t)new_page_count;
+    if (new_count * WASM_PAGE_SIZE > m_module.memory_max) return -1;
+
+    // Map only the newly-added range. The original pages are already
+    // mapped (since startup); using MAP_FIXED over them would zap any
+    // data the program has stored there.
+    if (new_page_count != 0) {
+        void* added = mmap(
+            (char*)memory_base + old_count * WASM_PAGE_SIZE,
+            (size_t)new_page_count * WASM_PAGE_SIZE,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+            -1,
+            0
+        );
+        if (added == MAP_FAILED) return -1;
+    }
+
+    m_memory_size = new_count * WASM_PAGE_SIZE;
+    return (int32_t)old_count;
 }
 
 void* wasm_host_calloc(size_t nmemb, size_t size) {
