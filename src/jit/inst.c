@@ -9,6 +9,7 @@
 #include "util/except.h"
 #include "util/string.h"
 #include "wasm/host.h"
+#include <stdint.h>
 
 #define JIT_PUSH(_type, _value) \
     do { \
@@ -1228,7 +1229,18 @@ static wasm_err_t jit_wasm_binopi(spidir_builder_handle_t builder, buffer_t* cod
         case 2: value = spidir_builder_build_imul(builder, arg1, arg2); break;
         case 3: value = spidir_builder_build_sdiv(builder, arg1, arg2); break;
         case 4: value = spidir_builder_build_udiv(builder, arg1, arg2); break;
-        case 5: value = spidir_builder_build_srem(builder, arg1, arg2); break;
+        case 5: {
+            // we are going to have `(arg1 & ((arg2 == -1) - 1)) % arg2`, that way if arg2 is -1, we will 
+            // mask out the entire arg1 which always results in 1 as expected, meanwhile, if its not -1,
+            // then it will turn into an ffs mask, which will not change anything letting it run normally, 
+            // this is required to handle the edge case of INT_MAX % -1, which is defined in wasm but is not 
+            // defined in spidir (and will actually trap on x86)
+            spidir_value_t minus_one = spidir_builder_build_iconst(builder, type, type == SPIDIR_TYPE_I32 ? (uint32_t)-1 : (uint64_t)-1);
+            spidir_value_t is_neg_one = spidir_builder_build_icmp(builder, SPIDIR_ICMP_EQ, type, arg2, minus_one);
+            spidir_value_t arg1_mask = spidir_builder_build_isub(builder, is_neg_one, spidir_builder_build_iconst(builder, type, 1));
+            arg1 = spidir_builder_build_and(builder, arg1, arg1_mask);
+            value = spidir_builder_build_srem(builder, arg1, arg2); break;
+        } break;
         case 6: value = spidir_builder_build_urem(builder, arg1, arg2); break;
         case 7: value = spidir_builder_build_and(builder, arg1, arg2); break;
         case 8: value = spidir_builder_build_or(builder, arg1, arg2); break;

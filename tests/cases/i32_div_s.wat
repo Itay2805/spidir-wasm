@@ -29,7 +29,7 @@
     block i32.const 42            i32.const -1 call $rem_s  i32.const 0 i32.eq br_if 0 unreachable end
     block i32.const -42           i32.const -1 call $rem_s  i32.const 0 i32.eq br_if 0 unreachable end
     block i32.const 2147483647    i32.const -1 call $rem_s  i32.const 0 i32.eq br_if 0 unreachable end ;; INT_MAX
-    ;; TODO: block i32.const -2147483648   i32.const -1 call $rem_s  i32.const 0 i32.eq br_if 0 unreachable end ;; INT_MIN — the dangerous one
+    block i32.const -2147483648   i32.const -1 call $rem_s  i32.const 0 i32.eq br_if 0 unreachable end ;; INT_MIN — the dangerous one
 
     ;; --- div_s with divisor -1 (only INT_MIN/-1 is allowed to trap;
     ;; everything else is just sign-flip): spec requires `lhs / -1 == -lhs`

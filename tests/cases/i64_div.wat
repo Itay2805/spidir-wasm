@@ -23,7 +23,7 @@
     block i64.const 42                       i64.const -1 call $rem_s  i64.const 0 i64.eq br_if 0 unreachable end
     block i64.const -42                      i64.const -1 call $rem_s  i64.const 0 i64.eq br_if 0 unreachable end
     block i64.const 9223372036854775807      i64.const -1 call $rem_s  i64.const 0 i64.eq br_if 0 unreachable end ;; INT64_MAX
-    ;; TODO: block i64.const -9223372036854775808     i64.const -1 call $rem_s  i64.const 0 i64.eq br_if 0 unreachable end ;; INT64_MIN — would otherwise #DE
+    block i64.const -9223372036854775808     i64.const -1 call $rem_s  i64.const 0 i64.eq br_if 0 unreachable end ;; INT64_MIN — would otherwise #DE
 
     ;; --- div_u: regular cases ---
     block i64.const 30000000000    i64.const 6  call $div_u  i64.const 5000000000 i64.eq br_if 0 unreachable end
