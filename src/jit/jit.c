@@ -159,6 +159,7 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
 
     // maps
     hmap_t code_map = HMAP_INIT;
+    hmap_t import_map = HMAP_INIT;
 
     spidir_codegen_config_t codgen_config = {
         .verify_ir = true,
@@ -173,14 +174,21 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
     size_t code_size = 0;
     size_t rodata_size = 0;
 
-    // now go over and jit everything
-    for (int64_t i = 0; i < ctx->module->functions_count; i++) {
+    // now go over and jit everything. The functions array is sized as
+    // imports_count + functions_count and indexed in wasm-funcidx order
+    // (imports first, then internal funcs), so the loop bound has to span
+    // both ranges.
+    size_t total_funcs = ctx->module->imports_count + ctx->module->functions_count;
+    for (int64_t i = 0; i < total_funcs; i++) {
         if (!ctx->functions[i].inited) {
             continue;
         }
 
         spidir_funcref_t funcref = ctx->functions[i].spidir;
         if (!spidir_funcref_is_internal(funcref)) {
+            // remember in the hmap that this exists
+            spidir_function_t func = spidir_funcref_get_external(funcref);
+            hmap_insert(&import_map, func.id, (uintptr_t)ctx->functions[i].address);
             continue;
         }
 
@@ -305,7 +313,12 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
                 // Wasm imports use the same target kind but aren't yet
                 // resolvable.
                 target = jit_helper_lookup_address(ctx, reloc->target.external.id);
-                CHECK(target != nullptr);
+                if (target == nullptr) {
+                    // try to look at imports
+                    uint64_t addr;
+                    CHECK(hmap_lookup(&import_map, reloc->target.external.id, &addr));
+                    target = (void*)addr;
+                }
 
             } else {
                 CHECK_FAIL();
@@ -379,6 +392,7 @@ cleanup:
     vec_free(&blobs);
     vec_free(&functions);
     hmap_free(&code_map);
+    hmap_free(&import_map);
 
     return err;
 }
@@ -489,10 +503,6 @@ cleanup:
 
 wasm_err_t wasm_module_jit(wasm_module_t* module, wasm_module_jit_t* jit, wasm_jit_config_t* config) {
     wasm_err_t err = WASM_NO_ERROR;
-    jit_context_t ctx = {
-        .module = module
-    };
-
     // use a default config when one is not provided
     if (config == nullptr) {
         static wasm_jit_config_t default_config = {
@@ -500,6 +510,11 @@ wasm_err_t wasm_module_jit(wasm_module_t* module, wasm_module_jit_t* jit, wasm_j
         };
         config = &default_config;
     }
+
+    jit_context_t ctx = {
+        .module = module,
+        .config = config,
+    };
 
     // it should be cheap enough to allocate it linearly
     ctx.functions = CALLOC(jit_function_t, module->functions_count + module->imports_count);

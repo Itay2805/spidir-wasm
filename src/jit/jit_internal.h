@@ -6,6 +6,7 @@
 #include "util/vec.h"
 #include "util/except.h"
 #include "spidir/module.h"
+#include "wasm/jit.h"
 
 #if 0
     #define JIT_TRACE(fmt, ...) TRACE(fmt, ##__VA_ARGS__)
@@ -15,6 +16,7 @@
 
 typedef struct jit_function {
     spidir_funcref_t spidir;
+    void* address;
     bool inited;
 } jit_function_t;
 
@@ -55,6 +57,9 @@ typedef struct jit_context {
     // extern function id back to the host C address via this table.
     spidir_extern_function_t helpers[JIT_HELPER_COUNT];
     bool helpers_inited[JIT_HELPER_COUNT];
+
+    // the config
+    wasm_jit_config_t* config;
 } jit_context_t;
 
 static inline spidir_value_type_t jit_get_spidir_value_type(wasm_value_type_t type) {

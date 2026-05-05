@@ -66,6 +66,37 @@ static wasm_module_jit_t m_module_jit = {};
 static void* m_memory_base = nullptr;
 static size_t m_memory_size = 0;
 
+// Test-only host imports under module name "env". Used by tests/cases/imports.wat
+// to verify the JIT's import-call path. Real runtimes would link against WASI
+// or a richer import surface; this stays minimal so the test is self-contained.
+//
+// Imported wasm functions are codegen'd with the same hidden (memory, state)
+// prefix as internal functions, so the host signatures must include them too.
+static int32_t host_env_add_i32(void* memory, void* state, int32_t a, int32_t b) {
+    (void)memory; (void)state;
+    return a + b;
+}
+
+static int64_t host_env_mul_i64(void* memory, void* state, int64_t a, int64_t b) {
+    (void)memory; (void)state;
+    return a * b;
+}
+
+static int32_t host_env_magic(void* memory, void* state) {
+    (void)memory; (void)state;
+    return (int32_t)0xDEADBEEF;
+}
+
+static void* resolve_import(void* arg, const char* module, const char* name, wasm_type_t* type) {
+    (void)arg; (void)type;
+    if (strcmp(module, "env") == 0) {
+        if (strcmp(name, "add_i32") == 0) return host_env_add_i32;
+        if (strcmp(name, "mul_i64") == 0) return host_env_mul_i64;
+        if (strcmp(name, "magic") == 0)   return host_env_magic;
+    }
+    return nullptr;
+}
+
 int main(int argc, char** argv) {
     wasm_err_t err = WASM_NO_ERROR;
     FILE* module_file = nullptr;
@@ -82,6 +113,7 @@ int main(int argc, char** argv) {
 
     wasm_jit_config_t config = {
         .optimize = true,
+        .resolve_import = resolve_import,
     };
 
     bool used_help = false;

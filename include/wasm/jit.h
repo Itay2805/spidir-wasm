@@ -15,6 +15,12 @@ typedef struct wasm_jit_config {
     void* dump_arg;
 
     /**
+     * For resolving imports from the jit, return nullptr if not found
+     */
+    void* (*resolve_import)(void* arg, const char* module, const char* name, wasm_type_t* type);
+    void* resolve_import_arg;
+
+    /**
      * Should we run the spidir optimizations
      */
     bool optimize;

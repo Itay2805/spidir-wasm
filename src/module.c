@@ -527,7 +527,7 @@ static wasm_err_t wasm_parse_export_section(wasm_module_t* module, buffer_t* buf
         wasm_export_type_t kind;
         uint32_t index = BUFFER_PULL_U32(buffer);
         switch (byte) {
-            case 0x00: CHECK(index < module->functions_count); kind = WASM_EXPORT_FUNC; break;
+            case 0x00: CHECK(index < module->functions_count + module->imports_count); kind = WASM_EXPORT_FUNC; break;
             case 0x02: CHECK(index == 0); kind = WASM_EXPORT_MEMORY; break;
             case 0x03: CHECK(index < module->globals_count); kind = WASM_EXPORT_GLOBAL; break;
             default: CHECK_FAIL("Unknown export type %x (%s)", byte, name);
