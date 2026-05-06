@@ -538,7 +538,13 @@ static wasm_err_t jit_wasm_global_get(spidir_builder_handle_t builder, buffer_t*
 
     spidir_value_t value = SPIDIR_VALUE_INVALID;
     if (ctx->globals[index].offset == -1) {
-        CHECK_FAIL("TODO: immutable globals");
+        switch (value_type) {
+            case SPIDIR_TYPE_I32: value = spidir_builder_build_iconst(builder, value_type, (uint32_t)ctx->module->globals[index].value.value.i32); break;
+            case SPIDIR_TYPE_I64: value = spidir_builder_build_iconst(builder, value_type, (uint64_t)ctx->module->globals[index].value.value.i64); break;
+            case SPIDIR_TYPE_F32: value = spidir_builder_build_fconst32(builder, ctx->module->globals[index].value.value.f32); break;
+            case SPIDIR_TYPE_F64: value = spidir_builder_build_fconst64(builder, ctx->module->globals[index].value.value.f64); break;
+            default: CHECK_FAIL();
+        }
 
     } else {
         // get the pointer to the global data
