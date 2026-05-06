@@ -59,7 +59,15 @@ void wasm_module_free(wasm_module_t* module) {
         wasm_host_free(module->data_segments[i].data);
     }
 
+    if (module->function_names != nullptr) {
+        size_t total_funcs = (size_t)module->imports_count + module->functions_count;
+        for (size_t i = 0; i < total_funcs; i++) {
+            wasm_host_free(module->function_names[i]);
+        }
+    }
 
+    wasm_host_free(module->module_name);
+    wasm_host_free(module->function_names);
     wasm_host_free(module->data_segments);
     wasm_host_free(module->types);
     wasm_host_free(module->imports);
@@ -575,6 +583,104 @@ cleanup:
     return err;
 }
 
+// Copy a wasm `name` (length-prefixed UTF-8) into a freshly-allocated, NUL-
+// terminated C string. Empty names return NULL — the caller treats the slot as
+// "no debug name available", same as if the entry was missing entirely.
+static wasm_err_t name_section_copy_str(buffer_t* contents, char** out) {
+    wasm_err_t err = WASM_NO_ERROR;
+    char* result = nullptr;
+
+    buffer_t name_buf = {};
+    RETHROW(buffer_pull_name(contents, &name_buf));
+
+    if (name_buf.len == 0) {
+        *out = nullptr;
+        goto cleanup;
+    }
+
+    result = wasm_host_calloc(1, name_buf.len + 1);
+    CHECK(result != nullptr);
+    memcpy(result, name_buf.data, name_buf.len);
+    result[name_buf.len] = '\0';
+
+    *out = result;
+    result = nullptr;
+
+cleanup:
+    wasm_host_free(result);
+    return err;
+}
+
+// Parses the "name" custom section. The section is optional and tolerant by
+// design: unknown subsection ids are skipped, and a parse failure inside the
+// section is downgraded to a no-op since names are purely informational.
+//
+// We only currently consume:
+//  - subsection 0 (module name)
+//  - subsection 1 (function names → wasm_module.function_names, indexed in
+//    funcidx order — imports first, then internal functions)
+//
+// Locals (subsection 2) and the post-MVP name subsections aren't materialized
+// yet; they're skipped without error so adding them later is additive.
+static wasm_err_t wasm_parse_name_section(wasm_module_t* module, buffer_t* buffer) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    // The name section is allowed to appear before/after we've read other
+    // sections, but in practice it's always last. We need imports/functions to
+    // be known so we can size the function_names array correctly.
+    size_t total_funcs = (size_t)module->imports_count + module->functions_count;
+
+    while (buffer->len != 0) {
+        uint8_t subsec_id = BUFFER_PULL(uint8_t, buffer);
+        uint32_t subsec_size = BUFFER_PULL_U32(buffer);
+        void* subsec_data = buffer_pull(buffer, subsec_size);
+        CHECK(subsec_data != nullptr);
+
+        buffer_t contents = init_buffer(subsec_data, subsec_size);
+
+        switch (subsec_id) {
+            case 0: {
+                // module name
+                if (module->module_name == nullptr) {
+                    RETHROW(name_section_copy_str(&contents, &module->module_name));
+                }
+            } break;
+
+            case 1: {
+                // function names: vec((funcidx, name))
+                if (module->function_names == nullptr && total_funcs != 0) {
+                    module->function_names = CALLOC(char*, total_funcs);
+                    CHECK(module->function_names != nullptr);
+                }
+
+                uint32_t name_count = BUFFER_PULL_U32(&contents);
+                for (uint32_t i = 0; i < name_count; i++) {
+                    uint32_t funcidx = BUFFER_PULL_U32(&contents);
+                    char* name = nullptr;
+                    RETHROW(name_section_copy_str(&contents, &name));
+
+                    // Out-of-range indices are silently dropped — the section
+                    // is informational, so a producer mistake shouldn't take
+                    // the module down.
+                    if (funcidx < total_funcs && module->function_names != nullptr) {
+                        wasm_host_free(module->function_names[funcidx]);
+                        module->function_names[funcidx] = name;
+                    } else {
+                        wasm_host_free(name);
+                    }
+                }
+            } break;
+
+            default:
+                // skip unknown subsections (locals, types, etc.)
+                break;
+        }
+    }
+
+cleanup:
+    return err;
+}
+
 wasm_err_t wasm_load_module(wasm_module_t* module, void* data, size_t size) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -600,7 +706,12 @@ wasm_err_t wasm_load_module(wasm_module_t* module, void* data, size_t size) {
                 buffer_t name = {};
                 RETHROW(buffer_pull_name(contents, &name));
 
-                // just ignore the custom sections for now
+                // Recognize the wasm `name` custom section so jit consumers
+                // can surface debug names (e.g. in the debug ELF). Other
+                // custom sections are still ignored.
+                if (name.len == 4 && memcmp(name.data, "name", 4) == 0) {
+                    RETHROW(wasm_parse_name_section(module, contents));
+                }
             } break;
 
             case WASM_SECTION_TYPE: RETHROW(wasm_parse_type_section(module, contents)); break;

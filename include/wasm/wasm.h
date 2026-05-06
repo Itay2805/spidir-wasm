@@ -115,6 +115,14 @@ typedef struct wasm_module {
     uint32_t tables_count;
     uint32_t elems_count;
     uint32_t data_segments_count;
+
+    // Optional debug names from the wasm `name` custom section. NULL if the
+    // section is absent or doesn't carry a value for the corresponding entry.
+    // function_names is indexed in wasm-funcidx order (imports first, then
+    // internal functions); each slot is either a heap-allocated NUL-terminated
+    // string owned by the module, or NULL.
+    char* module_name;
+    char** function_names;
 } wasm_module_t;
 
 wasm_err_t wasm_load_module(wasm_module_t* module, void* data, size_t size);
