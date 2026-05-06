@@ -105,7 +105,7 @@ wat-bin-outputs := $(patsubst cases/%.wat,$(BUILD)/%,$(cases-wat-src))
 targets += $(wat-bin-outputs)
 
 quiet_cmd_wat = WAT     $@
-      cmd_wat = $(WAT2WASM) $< -o $@
+      cmd_wat = $(WAT2WASM) --debug-names $< -o $@
 
 $(wat-bin-outputs): $(BUILD)/%: cases/%.wat FORCE
 	$(call cmd,wat)

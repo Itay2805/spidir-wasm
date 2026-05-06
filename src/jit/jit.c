@@ -55,8 +55,14 @@ void wasm_module_jit_free(wasm_module_jit_t* jit) {
     }
     wasm_host_free(jit->exports);
     wasm_host_free(jit->state_init);
+    wasm_host_free(jit->debug.funcs);
+    wasm_host_free(jit->debug.relocs);
     jit->exports = nullptr;
     jit->state_init = nullptr;
+    jit->debug.funcs = nullptr;
+    jit->debug.relocs = nullptr;
+    jit->debug.funcs_count = 0;
+    jit->debug.relocs_count = 0;
 }
 
 static wasm_err_t jit_emit_spidir(jit_context_t* ctx) {
@@ -154,12 +160,32 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
         wasm_jit_init();
     }
 
+    // Whether we're populating jit->debug. Off by default — capturing per-
+    // function layout and a vec of resolved relocations adds an allocation
+    // per function plus one per reloc, which the runtime never reads. Hosts
+    // that want a debug ELF / GDB JIT registration set the flag and pay
+    // those bytes; everyone else gets the lean path.
+    bool capture_debug = config->emit_debug_info;
+
     vec(spidir_codegen_blob_handle_t) blobs = {};
     vec(spidir_function_t) functions = {};
+
+    // Debug-only buffers. Left zero-initialized when the flag is off — the
+    // empty vec / HMAP_INIT cost nothing to free.
+    vec(wasm_jit_reloc_t) debug_relocs = {};
 
     // maps
     hmap_t code_map = HMAP_INIT;
     hmap_t import_map = HMAP_INIT;
+
+    // Reverse maps: spidir function id → wasm funcidx. Only populated when
+    // capture_debug is on, so the relocations vec can name a wasm-level
+    // target rather than an opaque spidir id. Internal funcs go into
+    // func_to_idx; imports get a separate map keyed by
+    // spidir_extern_function_t.id (jit_function_t.spidir is an external
+    // funcref for those).
+    hmap_t func_to_idx = HMAP_INIT;
+    hmap_t extern_to_idx = HMAP_INIT;
 
     spidir_codegen_config_t codgen_config = {
         .verify_ir = true,
@@ -189,10 +215,19 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
             // remember in the hmap that this exists
             spidir_function_t func = spidir_funcref_get_external(funcref);
             hmap_insert(&import_map, func.id, (uintptr_t)ctx->functions[i].address);
+            // Track the import so the debug ELF can label external relocations
+            // against it. Imports use spidir extern ids, which are disjoint
+            // from internal ids — keep them in their own map.
+            if (capture_debug) {
+                hmap_insert(&extern_to_idx, func.id, (uint64_t)i);
+            }
             continue;
         }
 
         spidir_function_t func = spidir_funcref_get_internal(funcref);
+        if (capture_debug) {
+            hmap_insert(&func_to_idx, func.id, (uint64_t)i);
+        }
 
         // actually emit the function
         spidir_codegen_blob_handle_t blob;
@@ -235,6 +270,9 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
         hmap_insert(&code_map, func.id, entry.value);
     }
 
+    size_t code_size_orig = code_size;
+    size_t rodata_size_orig = rodata_size;
+
     // align everything to page size
     size_t page_size = wasm_host_page_size();
     code_size = ALIGN_UP(code_size, page_size);
@@ -253,6 +291,20 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
     if (code_size != 0) memset(jit_code, 0xCC, code_size);
     if (rodata_size != 0) memset(jit_rodata, 0x00, rodata_size);
 
+    // Record the segment bounds and reserve the per-function layout array
+    // up front so the debug ELF emitter can use them without recomputing
+    // from page counts. Both are skipped entirely when debug capture is off.
+    if (capture_debug) {
+        jit->debug.code_base = jit_code;
+        jit->debug.code_size = code_size_orig;
+        jit->debug.rodata_base = jit_rodata;
+        jit->debug.rodata_size = rodata_size_orig;
+        if (functions.length != 0) {
+            jit->debug.funcs = CALLOC(wasm_jit_func_layout_t, functions.length);
+            CHECK(jit->debug.funcs != nullptr);
+        }
+    }
+
     // now go over all the blobs
     // and apply all the relocs
     for (int i = 0; i < functions.length; i++) {
@@ -269,20 +321,38 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
         // copy the blobs
         //
 
-        if (spidir_codegen_blob_get_code_size(blob) != 0) {
+        size_t blob_code_size = spidir_codegen_blob_get_code_size(blob);
+        size_t blob_const_size = spidir_codegen_blob_get_constpool_size(blob);
+
+        if (blob_code_size != 0) {
             memcpy(
                 jit_code + func_code_offset,
                 spidir_codegen_blob_get_code(blob),
-                spidir_codegen_blob_get_code_size(blob)
+                blob_code_size
             );
         }
 
-        if (spidir_codegen_blob_get_constpool_size(blob) != 0) {
+        if (blob_const_size != 0) {
             memcpy(
                 jit_rodata + const_pool_offset,
                 spidir_codegen_blob_get_constpool(blob),
-                spidir_codegen_blob_get_constpool_size(blob)
+                blob_const_size
             );
+        }
+
+        // Record the layout for the debug ELF. Owner funcidx comes from
+        // func_to_idx (only populated when capture is on); skip the whole
+        // dance when nobody asked for debug info.
+        uint64_t owner_funcidx = UINT64_MAX;
+        if (capture_debug) {
+            CHECK(hmap_lookup(&func_to_idx, func.id, &owner_funcidx));
+
+            wasm_jit_func_layout_t* layout = &jit->debug.funcs[jit->debug.funcs_count++];
+            layout->funcidx = (uint32_t)owner_funcidx;
+            layout->address = jit_code + func_code_offset;
+            layout->code_size = blob_code_size;
+            layout->const_address = blob_const_size != 0 ? jit_rodata + const_pool_offset : nullptr;
+            layout->const_size = blob_const_size;
         }
 
         // go over the relocations of the function
@@ -290,10 +360,18 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
         for (int j = 0; j < spidir_codegen_blob_get_reloc_count(blob); j++) {
             const spidir_codegen_reloc_t* reloc = &relocs[j];
 
-            // resolve the target
+            // Resolve the target. The debug-only fields stay UINT32_MAX /
+            // unset when capture is off so we don't pay for hmap lookups
+            // we'll never read.
             void* target = nullptr;
+            wasm_jit_reloc_target_kind_t dbg_target_kind = WASM_JIT_RELOC_TARGET_EXTERNAL;
+            uint32_t dbg_target_funcidx = UINT32_MAX;
+
             if (reloc->target_kind == SPIDIR_RELOC_TARGET_CONSTPOOL) {
                 target = jit_rodata + const_pool_offset;
+                if (capture_debug) {
+                    dbg_target_kind = WASM_JIT_RELOC_TARGET_CONSTPOOL;
+                }
 
             } else if (reloc->target_kind == SPIDIR_RELOC_TARGET_INTERNAL_FUNCTION) {
                 // get the callee entry
@@ -308,6 +386,13 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
                 //       true without APX
                 CHECK(reloc->target_kind == SPIDIR_RELOC_X64_PC32);
 
+                if (capture_debug) {
+                    uint64_t callee_funcidx = UINT64_MAX;
+                    CHECK(hmap_lookup(&func_to_idx, reloc->target.internal.id, &callee_funcidx));
+                    dbg_target_kind = WASM_JIT_RELOC_TARGET_FUNC;
+                    dbg_target_funcidx = (uint32_t)callee_funcidx;
+                }
+
             } else if (reloc->target_kind == SPIDIR_RELOC_TARGET_EXTERNAL_FUNCTION) {
                 // For now, externals are only used to call JIT helpers.
                 // Wasm imports use the same target kind but aren't yet
@@ -320,6 +405,19 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
                     target = (void*)addr;
                 }
 
+                if (capture_debug) {
+                    // Imports round-trip back to a wasm-level funcidx;
+                    // helpers don't, so they get logged as raw external
+                    // addresses.
+                    uint64_t import_funcidx = UINT64_MAX;
+                    if (hmap_lookup(&extern_to_idx, reloc->target.external.id, &import_funcidx)) {
+                        dbg_target_kind = WASM_JIT_RELOC_TARGET_FUNC;
+                        dbg_target_funcidx = (uint32_t)import_funcidx;
+                    } else {
+                        dbg_target_kind = WASM_JIT_RELOC_TARGET_EXTERNAL;
+                    }
+                }
+
             } else {
                 CHECK_FAIL();
             }
@@ -327,11 +425,46 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
             // actually apply the reloc
             RETHROW(jit_apply_reloc(
                 jit_code + func_code_offset,
-                spidir_codegen_blob_get_code_size(blob),
+                blob_code_size,
                 reloc,
                 target
             ));
+
+            // Record the reloc for the debug ELF. We capture both PC32 and
+            // ABS64 — the ELF emitter only emits ELF relocations for ABS64,
+            // but PC32 entries help label call sites if we ever surface them.
+            if (capture_debug) {
+                wasm_jit_reloc_kind_t dbg_kind;
+                switch (reloc->kind) {
+                    case SPIDIR_RELOC_X64_PC32:  dbg_kind = WASM_JIT_RELOC_X64_PC32; break;
+                    case SPIDIR_RELOC_X64_ABS64: dbg_kind = WASM_JIT_RELOC_X64_ABS64; break;
+                    default: CHECK_FAIL();
+                }
+
+                wasm_jit_reloc_t entry = {
+                    .address = jit_code + func_code_offset + reloc->offset,
+                    .addend = reloc->addend,
+                    .kind = dbg_kind,
+                    .target_kind = dbg_target_kind,
+                    .target_funcidx = dbg_target_funcidx,
+                    .target_address = target,
+                    .owner_funcidx = (uint32_t)owner_funcidx,
+                };
+                vec_push(&debug_relocs, entry);
+            }
         }
+    }
+
+    // Hand the captured reloc list off to the JIT result. We move the buffer
+    // rather than copy it to keep this hot path allocation-light. When debug
+    // capture is off, debug_relocs is empty and this is just a couple of
+    // null assignments.
+    if (capture_debug) {
+        jit->debug.relocs = debug_relocs.elements;
+        jit->debug.relocs_count = debug_relocs.length;
+        debug_relocs.elements = nullptr;
+        debug_relocs.length = 0;
+        debug_relocs.capacity = 0;
     }
 
     // fill the export table, this will also emit the endbr64
@@ -391,8 +524,11 @@ cleanup:
     }
     vec_free(&blobs);
     vec_free(&functions);
+    vec_free(&debug_relocs);
     hmap_free(&code_map);
     hmap_free(&import_map);
+    hmap_free(&func_to_idx);
+    hmap_free(&extern_to_idx);
 
     return err;
 }

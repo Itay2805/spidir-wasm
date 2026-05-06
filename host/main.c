@@ -8,12 +8,49 @@
 
 #include <wasm/wasm.h>
 #include <wasm/jit.h>
+#include <wasm/debug_elf.h>
 
 #include <util/except.h>
 #include <spidir/log.h>
 
 #include "wasm/error.h"
 #include "wasm/host.h"
+
+// --- GDB JIT interface ----------------------------------------------------
+// See https://sourceware.org/gdb/onlinedocs/gdb/JIT-Interface.html. GDB sets
+// a software breakpoint on __jit_debug_register_code; whenever the JIT
+// publishes a new ELF it calls that function and GDB walks
+// __jit_debug_descriptor.first_entry to pick up the change. The interface is
+// passive — when no debugger is attached the call is just a function entry.
+typedef enum {
+    JIT_NOACTION = 0,
+    JIT_REGISTER_FN = 1,
+    JIT_UNREGISTER_FN = 2,
+} jit_actions_t;
+
+struct jit_code_entry {
+    struct jit_code_entry* next_entry;
+    struct jit_code_entry* prev_entry;
+    const char* symfile_addr;
+    uint64_t symfile_size;
+};
+
+struct jit_descriptor {
+    uint32_t version;
+    uint32_t action_flag;
+    struct jit_code_entry* relevant_entry;
+    struct jit_code_entry* first_entry;
+};
+
+// GDB documents this as the standard symbol it watches; the no-inline / used
+// attributes keep the breakpoint from being optimized out. This is the
+// canonical pattern from the GDB manual.
+__attribute__((noinline, used))
+void __jit_debug_register_code(void) {
+    __asm__ __volatile__("");
+}
+
+struct jit_descriptor __jit_debug_descriptor = { 1, 0, nullptr, nullptr };
 
 typedef enum option_type {
     // options with short version
@@ -26,6 +63,8 @@ typedef enum option_type {
 
     OPTION_LOG_LEVEL,
     OPTION_SPIDIR_DUMP,
+    OPTION_EMIT_DEBUG_ELF,
+    OPTION_GDB_JIT,
 } option_type_t;
 
 static struct option long_options[] = {
@@ -35,6 +74,14 @@ static struct option long_options[] = {
     { "log-level", required_argument, 0, OPTION_LOG_LEVEL },
 
     { "spidir-dump", optional_argument, 0, OPTION_SPIDIR_DUMP },
+
+    // Dump a debug ELF that mirrors the JIT'd binary (see
+    // wasm_jit_emit_debug_elf). Useful with `objdump -d -r` or `readelf -a`.
+    { "emit-debug-elf", required_argument, 0, OPTION_EMIT_DEBUG_ELF },
+
+    // Publish the same debug ELF to GDB through the JIT interface so a
+    // backtrace inside generated code resolves to wasm-level function names.
+    { "gdb-jit", no_argument, 0, OPTION_GDB_JIT },
 
     { 0, 0, 0, 0 },
 };
@@ -106,6 +153,11 @@ int main(int argc, char** argv) {
 
     char* module_path = nullptr;
     FILE* spidir_output_file = nullptr;
+    char* debug_elf_path = nullptr;
+    bool gdb_jit = false;
+    void* debug_elf_data = nullptr;
+    size_t debug_elf_size = 0;
+    struct jit_code_entry* gdb_jit_entry = nullptr;
 
     // enable logging and set them to warn by default
     spidir_log_init(stdout_log_callback);
@@ -159,12 +211,24 @@ int main(int argc, char** argv) {
                 spidir_log_set_max_level(level);
             } break;
 
+            case OPTION_EMIT_DEBUG_ELF: {
+                CHECK(debug_elf_path == nullptr, "Debug ELF path already specified");
+                debug_elf_path = strdup(optarg);
+                CHECK(debug_elf_path != nullptr);
+            } break;
+
+            case OPTION_GDB_JIT: {
+                gdb_jit = true;
+            } break;
+
             case OPTION_HELP: {
                 TRACE(" -h | --help                        print this help text");
                 TRACE(" -m | --module <file>               the wasm module file to compile");
                 TRACE(" -d | --debug                       don't perform jit optimizations");
                 TRACE("      --log-level <level>           set the log level (0=none, 1=error, 2=warn, 3=info, debug=4, trace=5)");
                 TRACE("      --spidir-dump <file>          dump the spidir output into a file (use `-` for stdout)");
+                TRACE("      --emit-debug-elf <file>       write a debug ELF reflecting the JIT'd binary");
+                TRACE("      --gdb-jit                     register the debug ELF with GDB via the JIT interface");
                 used_help = true;
             } break;
 
@@ -176,6 +240,13 @@ int main(int argc, char** argv) {
 
     if (used_help) {
         goto cleanup;
+    }
+
+    // The debug ELF / GDB JIT paths both need wasm_module_jit to record
+    // per-function layout and resolved relocations into jit->debug. The flag
+    // stays off otherwise so a normal run pays nothing for the bookkeeping.
+    if (debug_elf_path != nullptr || gdb_jit) {
+        config.emit_debug_info = true;
     }
 
     // check we have the module path
@@ -210,6 +281,41 @@ int main(int argc, char** argv) {
 
     // jit the module
     RETHROW(wasm_module_jit(&m_module, &m_module_jit, &config));
+
+    // Emit the debug ELF up front so it reflects the live JIT image (the
+    // bytes don't change after this point). We share one buffer between the
+    // file dump and the GDB JIT registration since they want identical
+    // contents — the buffer is freed in cleanup.
+    if (debug_elf_path != nullptr || gdb_jit) {
+        RETHROW(wasm_jit_emit_debug_elf(&m_module, &m_module_jit, &debug_elf_data, &debug_elf_size));
+
+        if (debug_elf_path != nullptr) {
+            FILE* f = fopen(debug_elf_path, "wb");
+            CHECK(f != nullptr, "%s: %s", strerror(errno), debug_elf_path);
+            CHECK(fwrite(debug_elf_data, debug_elf_size, 1, f) == 1, "%s", strerror(errno));
+            fclose(f);
+        }
+
+        if (gdb_jit) {
+            // Per the GDB JIT protocol: build a code entry, link it into the
+            // descriptor, set action_flag = JIT_REGISTER_FN, then call the
+            // breakpoint function. GDB picks the entry up only when it's
+            // attached; running without GDB makes this a couple of pointer
+            // writes and a no-op function call.
+            gdb_jit_entry = calloc(1, sizeof(*gdb_jit_entry));
+            CHECK(gdb_jit_entry != nullptr);
+            gdb_jit_entry->symfile_addr = debug_elf_data;
+            gdb_jit_entry->symfile_size = debug_elf_size;
+            gdb_jit_entry->next_entry = __jit_debug_descriptor.first_entry;
+            if (__jit_debug_descriptor.first_entry != nullptr) {
+                __jit_debug_descriptor.first_entry->prev_entry = gdb_jit_entry;
+            }
+            __jit_debug_descriptor.first_entry = gdb_jit_entry;
+            __jit_debug_descriptor.relevant_entry = gdb_jit_entry;
+            __jit_debug_descriptor.action_flag = JIT_REGISTER_FN;
+            __jit_debug_register_code();
+        }
+    }
 
     // allocate the runtime state buffer (globals + tables) and seed it
     // with the JIT-built initializer so funcref tables come up populated
@@ -272,6 +378,25 @@ int main(int argc, char** argv) {
     status = entry(m_memory_base, state_base);
 
 cleanup:
+    // Unregister the GDB JIT entry before freeing the ELF buffer, otherwise
+    // GDB would chase a dangling pointer on the next debugger interaction.
+    if (gdb_jit_entry != nullptr) {
+        __jit_debug_descriptor.action_flag = JIT_UNREGISTER_FN;
+        __jit_debug_descriptor.relevant_entry = gdb_jit_entry;
+        if (gdb_jit_entry->prev_entry != nullptr) {
+            gdb_jit_entry->prev_entry->next_entry = gdb_jit_entry->next_entry;
+        } else {
+            __jit_debug_descriptor.first_entry = gdb_jit_entry->next_entry;
+        }
+        if (gdb_jit_entry->next_entry != nullptr) {
+            gdb_jit_entry->next_entry->prev_entry = gdb_jit_entry->prev_entry;
+        }
+        __jit_debug_register_code();
+        free(gdb_jit_entry);
+    }
+    wasm_host_free(debug_elf_data);
+    free(debug_elf_path);
+
     wasm_module_jit_free(&m_module_jit);
     wasm_module_free(&m_module);
     free(module_path);

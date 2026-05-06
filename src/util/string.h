@@ -5,3 +5,4 @@
 #define memmove __builtin_memmove
 #define memcmp __builtin_memcmp
 #define strcmp __builtin_strcmp
+#define strlen __builtin_strlen

@@ -28,3 +28,8 @@ void* jit_helper_lookup_address(jit_context_t* ctx, uint32_t external_id);
  * be passed straight to spidir_builder_build_call.
  */
 wasm_err_t jit_get_helper(jit_context_t* ctx, jit_helper_kind_t kind, spidir_funcref_t* out);
+
+/**
+ * Get the name of a helper from its address, returning null if not found
+ */
+const char* jit_get_helper_name(const char* address);

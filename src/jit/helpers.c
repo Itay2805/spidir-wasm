@@ -26,7 +26,7 @@ typedef struct helper_def {
     const spidir_value_type_t* const arg_types;
 } helper_def_t;
 
-static const helper_def_t g_helper_defs[JIT_HELPER_COUNT] = {
+static const helper_def_t m_helper_defs[JIT_HELPER_COUNT] = {
     [JIT_HELPER_MEMORY_SIZE] = {
         .name = "memory.size",
         .address = wasm_host_memory_size,
@@ -84,7 +84,7 @@ wasm_err_t jit_get_helper(jit_context_t* ctx, jit_helper_kind_t kind, spidir_fun
     CHECK(kind < JIT_HELPER_COUNT);
 
     if (!ctx->helpers_inited[kind]) {
-        const helper_def_t* def = &g_helper_defs[kind];
+        const helper_def_t* def = &m_helper_defs[kind];
         ctx->helpers[kind] = spidir_module_create_extern_function(
             ctx->spidir,
             def->name,
@@ -101,10 +101,19 @@ cleanup:
     return err;
 }
 
+const char* jit_get_helper_name(const char* address) {
+    for (int i = 0; i < JIT_HELPER_COUNT; i++) {
+        if (m_helper_defs[i].address == address) {
+            return m_helper_defs[i].name;
+        }
+    }
+    return nullptr;
+}
+
 void* jit_helper_lookup_address(jit_context_t* ctx, uint32_t external_id) {
     for (int i = 0; i < JIT_HELPER_COUNT; i++) {
         if (ctx->helpers_inited[i] && ctx->helpers[i].id == external_id) {
-            return g_helper_defs[i].address;
+            return m_helper_defs[i].address;
         }
     }
     return nullptr;
