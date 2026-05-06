@@ -61,18 +61,19 @@ wasm_err_t jit_prepare_function(jit_context_t* ctx, uint32_t funcidx) {
     wasm_host_snprintf(name, sizeof(name), "func%d", funcidx);
 
     if (funcidx < ctx->module->imports_count) {
-        CHECK(ctx->config->resolve_import != nullptr);
-
         // must be a function import
         wasm_import_t* import = &ctx->module->imports[funcidx];
         CHECK(import->kind == WASM_EXTERN_FUNC);
 
-        void* addr = ctx->config->resolve_import(
-            ctx->config->resolve_import_arg,
-            import->module_name, import->item_name,
-            type
-        );
-        CHECK(addr != nullptr, "Failed to resolve import module=`%s`, item=`%s`", import->module_name, import->item_name)
+        void* addr = nullptr;
+        if (ctx->config->resolve_import != nullptr) {
+            addr = ctx->config->resolve_import(
+                ctx->config->resolve_import_arg,
+                import->module_name, import->item_name,
+                type
+            );
+        }
+        CHECK(addr != nullptr, "Failed to resolve import `%s.%s`", import->module_name, import->item_name);
 
         // for imports we create an extern reference
         spidir_extern_function_t func = spidir_module_create_extern_function(
