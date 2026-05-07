@@ -17,6 +17,7 @@
 #include <stdint.h>
 
 #include "util/hmap.h"
+#include "wasm/wasm.h"
 
 static spidir_codegen_machine_handle_t g_spidir_machine = nullptr;
 
@@ -579,15 +580,7 @@ cleanup:
     return err;
 }
 
-// Builds the initializer for the runtime state buffer. The globals
-// portion is left zero (existing behavior); each elem segment is
-// translated into a write of the corresponding funcref pointers into the
-// owning table's slots. Must be called after codegen so we know each
-// internal function's runtime address.
-static wasm_err_t jit_build_state_init(
-    jit_context_t* ctx, wasm_module_jit_t* jit,
-    void* jit_code, hmap_t* code_map
-) {
+static wasm_err_t jit_build_state_init(jit_context_t* ctx, wasm_module_jit_t* jit, void* jit_code, hmap_t* code_map) {
     wasm_err_t err = WASM_NO_ERROR;
 
     if (jit->state_size == 0) {
@@ -597,7 +590,24 @@ static wasm_err_t jit_build_state_init(
     jit->state_init = wasm_host_calloc(1, jit->state_size);
     CHECK(jit->state_init != nullptr);
 
-    for (int i = 0; i < ctx->module->elems_count; i++) {
+    // lay out the global values
+    for (int64_t i = 0; i < ctx->module->globals_count; i++) {
+        wasm_global_t* global = &ctx->module->globals[i];
+        if (!global->mutable) continue;
+        jit_global_t* jit_global = &ctx->globals[i];
+
+        void* data = jit->state_init + jit_global->offset;
+        switch (global->value.kind) {
+            case WASM_VALUE_TYPE_F32: POKE(float, data) = global->value.value.f32; break;
+            case WASM_VALUE_TYPE_F64: POKE(double, data) = global->value.value.f64; break;
+            case WASM_VALUE_TYPE_I32: POKE(int32_t, data) = global->value.value.i32; break;
+            case WASM_VALUE_TYPE_I64: POKE(int64_t, data) = global->value.value.i64; break;
+            default: CHECK_FAIL();
+        }
+    }
+
+    // lay out the table content
+    for (int64_t i = 0; i < ctx->module->elems_count; i++) {
         wasm_elem_segment_t* elem = &ctx->module->elems[i];
         CHECK(elem->tableidx < ctx->module->tables_count);
         jit_table_t* table = &ctx->tables[elem->tableidx];
@@ -607,7 +617,8 @@ static wasm_err_t jit_build_state_init(
         CHECK(!__builtin_add_overflow((size_t)elem->offset, (size_t)elem->funcs_count, &end_slot));
         CHECK(end_slot <= table->length);
 
-        for (uint32_t j = 0; j < elem->funcs_count; j++) {
+        // lay out all of the functions in the elements
+        for (int64_t j = 0; j < elem->funcs_count; j++) {
             uint32_t fidx = elem->funcs[j];
             CHECK(ctx->functions[fidx].inited);
 
@@ -626,7 +637,7 @@ static wasm_err_t jit_build_state_init(
             // identical to what gets exposed for direct exports.
             void* target = jit_get_indirect(jit_code + entry.code_offset);
 
-            void** slots = (void**)((uint8_t*)jit->state_init + table->offset);
+            void** slots = jit->state_init + table->offset;
             slots[elem->offset + j] = target;
         }
     }

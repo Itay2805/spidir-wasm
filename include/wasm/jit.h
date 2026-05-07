@@ -129,16 +129,13 @@ typedef struct wasm_module_jit {
     // the addresses of exported functions
     wasm_jit_export_t* exports;
 
-    // the size in bytes needed for the runtime state buffer (globals
-    // followed by tables). The host is expected to allocate state_size
-    // bytes, memcpy the contents of state_init into them (so funcref
-    // table slots are populated), then pass the resulting pointer in as
-    // the second argument when calling exported functions.
+    // the size in bytes needed for the runtime state buffer. The host 
+    // is expected to allocate this much state when setting up a new 
+    // instance of the jitted module
     size_t state_size;
 
-    // optional initializer for the state buffer (NULL when state_size is
-    // zero). Owned by the JIT and freed by wasm_module_jit_free; the host must
-    // memcpy out before relying on it surviving.
+    // initializer for the state buffer. the host must memcpy this into the 
+    // allocated state before calling into the code
     void* state_init;
 
     // Optional debug info for the JIT'd binary, captured during codegen.

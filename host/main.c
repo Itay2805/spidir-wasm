@@ -322,11 +322,7 @@ int main(int argc, char** argv) {
     if (m_module_jit.state_size != 0) {
         state_base = malloc(m_module_jit.state_size);
         CHECK(state_base != nullptr);
-        if (m_module_jit.state_init != nullptr) {
-            memcpy(state_base, m_module_jit.state_init, m_module_jit.state_size);
-        } else {
-            memset(state_base, 0, m_module_jit.state_size);
-        }
+        memcpy(state_base, m_module_jit.state_init, m_module_jit.state_size);
     }
 
     // we reserve 8gb of address space as required
