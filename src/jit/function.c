@@ -57,8 +57,18 @@ wasm_err_t jit_prepare_function(jit_context_t* ctx, uint32_t funcidx) {
         args[ai++] = jit_get_spidir_value_type(type->arg_types[i]);
     }
 
+    // get the debug name if available
+    char* debug_name = nullptr;
+    if (ctx->module->function_names != nullptr) {
+        debug_name = ctx->module->function_names[funcidx];
+    }
+
+    // fallback to auto-generated name
     char name[64];
-    wasm_host_snprintf(name, sizeof(name), "func%d", funcidx);
+    if (debug_name == nullptr) {
+        wasm_host_snprintf(name, sizeof(name), "func%d", funcidx);
+        debug_name = name;
+    }
 
     if (funcidx < ctx->module->imports_count) {
         // must be a function import
@@ -78,7 +88,7 @@ wasm_err_t jit_prepare_function(jit_context_t* ctx, uint32_t funcidx) {
         // for imports we create an extern reference
         spidir_extern_function_t func = spidir_module_create_extern_function(
             ctx->spidir,
-            name,
+            debug_name,
             ret_type,
             args_count, args
         );
@@ -88,7 +98,7 @@ wasm_err_t jit_prepare_function(jit_context_t* ctx, uint32_t funcidx) {
         // for normal function create as internal function
         spidir_function_t func = spidir_module_create_function(
             ctx->spidir,
-            name,
+            debug_name,
             ret_type,
             args_count, args
         );
