@@ -8,6 +8,7 @@
 #include "util/defs.h"
 #include "util/except.h"
 #include "util/string.h"
+#include "wasm/error.h"
 #include "wasm/host.h"
 #include <stdint.h>
 
@@ -863,14 +864,14 @@ cleanup:
     return err;
 }
 
-static wasm_err_t jit_wasm_prefix_fc(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+static wasm_err_t jit_wasm_bulk_memory_prefix(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
     uint32_t sub = BUFFER_PULL_U32(code);
     switch (sub) {
         case 10: RETHROW(jit_wasm_memory_copy(builder, code, ctx, func, label)); break;
         case 11: RETHROW(jit_wasm_memory_fill(builder, code, ctx, func, label)); break;
-        default: CHECK_FAIL("Unsupported 0xFC sub-opcode %u", sub);
+        default: CHECK_FAIL("Unsupported bulk-memory sub-opcode %u", sub);
     }
 
 cleanup:
@@ -1262,6 +1263,22 @@ cleanup:
 }
 
 //----------------------------------------------------------------------------------------------------------------------
+// Atomic Instructions
+//----------------------------------------------------------------------------------------------------------------------
+
+static wasm_err_t jit_wasm_atomic_prefix(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint32_t sub = BUFFER_PULL_U32(code);
+    switch (sub) {
+        default: CHECK_FAIL("Unsupported atomic sub-opcode %u", sub);
+    }
+
+cleanup:
+    return err;
+}
+
+//----------------------------------------------------------------------------------------------------------------------
 // Instruction lookup table
 //----------------------------------------------------------------------------------------------------------------------
 
@@ -1326,60 +1343,73 @@ cleanup:
     return err;
 }
 
-const jit_instruction_t g_wasm_inst_jit_callbacks[0x100] = {
-    [0x0B] = jit_wasm_end,
+wasm_err_t jit_wasm_opcode(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
 
-    // Parametric Instructions
-    [0x00] = jit_wasm_unreachable,
-    [0x01] = jit_wasm_nop,
-    [0x1A] = jit_wasm_drop,
-    [0x1B] = jit_wasm_select,
+    uint8_t opcode = BUFFER_PULL(uint8_t, code);
+    switch (opcode) {
+        // End instruction
+        case 0x0B: RETHROW(jit_wasm_end(builder, code, ctx, func, label)); break;
 
-    // Control Instructions
-    [0x02] = jit_wasm_block,
-    [0x03] = jit_wasm_loop,
-    [0x0C] = jit_wasm_br,
-    [0x0D] = jit_wasm_br_if,
-    [0x0F] = jit_wasm_return,
-    [0x10] = jit_wasm_call,
-    [0x11] = jit_wasm_call_indirect,
+        // Parametric Instructions
+        case 0x00: RETHROW(jit_wasm_unreachable(builder, code, ctx, func, label)); break;
+        case 0x01: RETHROW(jit_wasm_nop(builder, code, ctx, func, label)); break;
+        case 0x1A: RETHROW(jit_wasm_drop(builder, code, ctx, func, label)); break;
+        case 0x1B: RETHROW(jit_wasm_select(builder, code, ctx, func, label)); break;
 
-    // Variable Instructions
-    [0x20] = jit_wasm_local_get,
-    [0x21] = jit_wasm_local_set,
-    [0x22] = jit_wasm_local_tee,
-    [0x23] = jit_wasm_global_get,
-    [0x24] = jit_wasm_global_set,
+        // Control Instructions
+        case 0x02: RETHROW(jit_wasm_block(builder, code, ctx, func, label)); break;
+        case 0x03: RETHROW(jit_wasm_loop(builder, code, ctx, func, label)); break;
+        case 0x0C: RETHROW(jit_wasm_br(builder, code, ctx, func, label)); break;
+        case 0x0D: RETHROW(jit_wasm_br_if(builder, code, ctx, func, label)); break;
+        case 0x0F: RETHROW(jit_wasm_return(builder, code, ctx, func, label)); break;
+        case 0x10: RETHROW(jit_wasm_call(builder, code, ctx, func, label)); break;
+        case 0x11: RETHROW(jit_wasm_call_indirect(builder, code, ctx, func, label)); break;
 
-    // Memory Instructions
-    [0x28 ... 0x35] = jit_wasm_load,
-    [0x36 ... 0x3E] = jit_wasm_store,
-    [0x3F] = jit_wasm_memory_size,
-    [0x40] = jit_wasm_memory_grow,
+        // Variable Instructions
+        case 0x20: RETHROW(jit_wasm_local_get(builder, code, ctx, func, label)); break;
+        case 0x21: RETHROW(jit_wasm_local_set(builder, code, ctx, func, label)); break;
+        case 0x22: RETHROW(jit_wasm_local_tee(builder, code, ctx, func, label)); break;
+        case 0x23: RETHROW(jit_wasm_global_get(builder, code, ctx, func, label)); break;
+        case 0x24: RETHROW(jit_wasm_global_set(builder, code, ctx, func, label)); break;
 
-    // Numeric Instructions
-    [0x41] = jit_wasm_i32_const,
-    [0x42] = jit_wasm_i64_const,
-    [0x43] = jit_wasm_f32_const,
-    [0x44] = jit_wasm_f64_const,
-    [0x45 ... 0x5A] = jit_wasm_cmpi,
-    [0x5B ... 0x66] = jit_wasm_cmpf,
-    [0x6A ... 0x73] = jit_wasm_binopi,
-    [0x74 ... 0x76] = jit_wasm_shift,
-    [0x7C ... 0x85] = jit_wasm_binopi,
-    [0x86 ... 0x88] = jit_wasm_shift,
-    [0x92 ... 0x95] = jit_wasm_binopf,
-    [0xA0 ... 0xA3] = jit_wasm_binopf,
+        // Memory Instructions
+        case 0x28 ... 0x35: RETHROW(jit_wasm_load(builder, code, ctx, func, label)); break;
+        case 0x36 ... 0x3E: RETHROW(jit_wasm_store(builder, code, ctx, func, label)); break;
+        case 0x3F: RETHROW(jit_wasm_memory_size(builder, code, ctx, func, label)); break;
+        case 0x40: RETHROW(jit_wasm_memory_grow(builder, code, ctx, func, label)); break;
 
-    // Conversions
-    [0xA7]          = jit_wasm_iconv,    // i32.wrap_i64
-    [0xAC ... 0xAD] = jit_wasm_iconv,    // i64.extend_i32_{s,u}
-    [0xB2 ... 0xB5] = jit_wasm_itof,     // f32.convert_i{32,64}_{s,u}
-    [0xB6]          = jit_wasm_fconv,    // f32.demote_f64
-    [0xB7 ... 0xBA] = jit_wasm_itof,     // f64.convert_i{32,64}_{s,u}
-    [0xBB]          = jit_wasm_fconv,    // f64.promote_f32
-    [0xC0 ... 0xC4] = jit_wasm_iconv,    // i{32,64}.extend{8,16,32}_s
+        // Numeric Instructions
+        case 0x41: RETHROW(jit_wasm_i32_const(builder, code, ctx, func, label)); break;
+        case 0x42: RETHROW(jit_wasm_i64_const(builder, code, ctx, func, label)); break;
+        case 0x43: RETHROW(jit_wasm_f32_const(builder, code, ctx, func, label)); break;
+        case 0x44: RETHROW(jit_wasm_f64_const(builder, code, ctx, func, label)); break;
+        case 0x45 ... 0x5A: RETHROW(jit_wasm_cmpi(builder, code, ctx, func, label)); break;
+        case 0x5B ... 0x66: RETHROW(jit_wasm_cmpf(builder, code, ctx, func, label)); break;
+        case 0x6A ... 0x73: RETHROW(jit_wasm_binopi(builder, code, ctx, func, label)); break;
+        case 0x74 ... 0x76: RETHROW(jit_wasm_shift(builder, code, ctx, func, label)); break;
+        case 0x7C ... 0x85: RETHROW(jit_wasm_binopi(builder, code, ctx, func, label)); break;
+        case 0x86 ... 0x88: RETHROW(jit_wasm_shift(builder, code, ctx, func, label)); break;
+        case 0x92 ... 0x95: RETHROW(jit_wasm_binopf(builder, code, ctx, func, label)); break;
+        case 0xA0 ... 0xA3: RETHROW(jit_wasm_binopf(builder, code, ctx, func, label)); break;
 
-    // Multi-byte prefix instructions
-    [0xFC] = jit_wasm_prefix_fc,
-};
+        // Conversions
+        case 0xA7: RETHROW(jit_wasm_iconv(builder, code, ctx, func, label)); break;
+        case 0xAC ... 0xAD: RETHROW(jit_wasm_iconv(builder, code, ctx, func, label)); break;
+        case 0xB2 ... 0xB5: RETHROW(jit_wasm_itof(builder, code, ctx, func, label)); break;
+        case 0xB6: RETHROW(jit_wasm_fconv(builder, code, ctx, func, label)); break;
+        case 0xB7 ... 0xBA: RETHROW(jit_wasm_itof(builder, code, ctx, func, label)); break;
+        case 0xBB: RETHROW(jit_wasm_fconv(builder, code, ctx, func, label)); break;
+        case 0xC0 ... 0xC4: RETHROW(jit_wasm_iconv(builder, code, ctx, func, label)); break;
+
+        // Multi-byte prefix instructions
+        case 0xFC: RETHROW(jit_wasm_bulk_memory_prefix(builder, code, ctx, func, label)); break;
+        case 0xFE: RETHROW(jit_wasm_atomic_prefix(builder, code, ctx, func, label)); break;
+
+        default:
+            CHECK_FAIL("Unknown opcode 0x%x", opcode);
+    }
+
+cleanup:
+    return err;
+}

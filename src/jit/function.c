@@ -188,13 +188,8 @@ static void jit_build_function(spidir_builder_handle_t builder, void* _ctx) {
         // ensure we have a label currently
         CHECK(func.labels.length > 0);
 
-        // get the next opcode
-        uint8_t byte = BUFFER_PULL(uint8_t, &code);
-        jit_instruction_t callback = g_wasm_inst_jit_callbacks[byte];
-        CHECK(callback != nullptr, "Unknown wasm opcode %02x", byte);
-
-        // emit it
-        RETHROW(callback(builder, &code, ctx, &func, &vec_last(&func.labels)));
+        // handle the next opcode
+        RETHROW(jit_wasm_opcode(builder, &code, ctx, &func, &vec_last(&func.labels)));
     }
 
     // ensure we have no more labels left

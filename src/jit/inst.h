@@ -56,4 +56,4 @@ typedef wasm_err_t (*jit_instruction_t)(spidir_builder_handle_t builder, buffer_
 
 void jit_free_label(jit_label_t* label);
 
-extern const jit_instruction_t g_wasm_inst_jit_callbacks[0x100];
+wasm_err_t jit_wasm_opcode(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label);
