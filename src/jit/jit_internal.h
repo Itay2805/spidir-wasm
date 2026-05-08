@@ -8,12 +8,6 @@
 #include "spidir/module.h"
 #include "wasm/jit.h"
 
-#if 0
-    #define JIT_TRACE(fmt, ...) TRACE(fmt, ##__VA_ARGS__)
-#else
-    #define JIT_TRACE(fmt, ...)
-#endif
-
 typedef struct jit_function {
     spidir_funcref_t spidir;
     void* address;

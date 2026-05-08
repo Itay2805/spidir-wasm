@@ -34,6 +34,16 @@ static void jit_helper_memory_init(void* dst, void* data, uint32_t data_len, uin
     }
 }
 
+static void jit_helper_atomic_store_1(_Atomic(uint8_t)* addr, uint32_t value) { atomic_store(addr, value); }
+static void jit_helper_atomic_store_2(_Atomic(uint16_t)* addr, uint32_t value) { atomic_store(addr, value); }
+static void jit_helper_atomic_store_4(_Atomic(uint32_t)* addr, uint32_t value) { atomic_store(addr, value); }
+static void jit_helper_atomic_store_8(_Atomic(uint64_t)* addr, uint64_t value) { atomic_store(addr, value); }
+
+static uint32_t jit_helper_atomic_load_1(_Atomic(uint8_t)* addr) { return atomic_load(addr); }
+static uint32_t jit_helper_atomic_load_2(_Atomic(uint16_t)* addr) { return atomic_load(addr); }
+static uint32_t jit_helper_atomic_load_4(_Atomic(uint32_t)* addr) { return atomic_load(addr); }
+static uint64_t jit_helper_atomic_load_8(_Atomic(uint64_t)* addr) { return atomic_load(addr); }
+
 static uint32_t jit_helper_atomic_rmw_cmpxchg_1(_Atomic(uint8_t)* addr, uint32_t expected, uint32_t replacement) { uint8_t old = expected; atomic_compare_exchange_strong(addr, &old, replacement); return old; }
 static uint32_t jit_helper_atomic_rmw_cmpxchg_2(_Atomic(uint16_t)* addr, uint32_t expected, uint32_t replacement) { uint16_t old = expected; atomic_compare_exchange_strong(addr, &old, replacement); return old; }
 static uint32_t jit_helper_atomic_rmw_cmpxchg_4(_Atomic(uint32_t)* addr, uint32_t expected, uint32_t replacement) { uint32_t old = expected; atomic_compare_exchange_strong(addr, &old, replacement); return old; }
@@ -74,6 +84,16 @@ static const helper_def_t m_helper_defs[JIT_HELPER_COUNT] = {
     [JIT_HELPER_MEMORY_INIT] = HELPER_FUNC(jit_helper_memory_init, NONE, PTR, PTR, I32, I32, I32),
 
     [JIT_HELPER_TRAP] = HELPER_FUNC(jit_helper_trap, NONE),
+
+    [JIT_HELPER_ATOMIC_STORE_1] = HELPER_FUNC(jit_helper_atomic_store_1, NONE, PTR, I32),
+    [JIT_HELPER_ATOMIC_STORE_2] = HELPER_FUNC(jit_helper_atomic_store_2, NONE, PTR, I32),
+    [JIT_HELPER_ATOMIC_STORE_4] = HELPER_FUNC(jit_helper_atomic_store_4, NONE, PTR, I32),
+    [JIT_HELPER_ATOMIC_STORE_8] = HELPER_FUNC(jit_helper_atomic_store_8, NONE, PTR, I64),
+
+    [JIT_HELPER_ATOMIC_LOAD_1] = HELPER_FUNC(jit_helper_atomic_load_1, I32, PTR),
+    [JIT_HELPER_ATOMIC_LOAD_2] = HELPER_FUNC(jit_helper_atomic_load_2, I32, PTR),
+    [JIT_HELPER_ATOMIC_LOAD_4] = HELPER_FUNC(jit_helper_atomic_load_4, I32, PTR),
+    [JIT_HELPER_ATOMIC_LOAD_8] = HELPER_FUNC(jit_helper_atomic_load_8, I64, PTR),
 
     [JIT_HELPER_ATOMIC_RMW_CMPXCHG_1] = HELPER_FUNC(jit_helper_atomic_rmw_cmpxchg_1, I32, PTR, I32, I32),
     [JIT_HELPER_ATOMIC_RMW_CMPXCHG_2] = HELPER_FUNC(jit_helper_atomic_rmw_cmpxchg_2, I32, PTR, I32, I32),

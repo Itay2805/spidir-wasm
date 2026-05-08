@@ -1,7 +1,6 @@
 #include "function.h"
 
 #include "inst.h"
-#include "opcodes.h"
 #include "buffer.h"
 #include "spidir/module.h"
 #include "util/defs.h"
@@ -124,8 +123,6 @@ static void jit_build_function(spidir_builder_handle_t builder, void* _ctx) {
     uint32_t funcidx = build->funcidx;
     jit_context_t* ctx = build->ctx;
     jit_function_ctx_t func = {};
-
-    JIT_TRACE("wasm: func%d", funcidx);
 
     // this must be an internal function, verify as such
     uint32_t imports_count = ctx->module->imports_count;

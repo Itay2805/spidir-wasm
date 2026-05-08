@@ -2,12 +2,10 @@
 
 #include "function.h"
 #include "jit/helpers.h"
-#include "opcodes.h"
 #include "spidir/module.h"
 #include "util/vec.h"
 #include "util/defs.h"
 #include "util/except.h"
-#include "util/string.h"
 #include "wasm/error.h"
 #include "wasm/host.h"
 #include "wasm/wasm.h"
@@ -77,7 +75,6 @@ static spidir_value_t jit_emit_zext64(spidir_builder_handle_t builder, spidir_va
 static wasm_err_t jit_wasm_unreachable(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
-    JIT_TRACE("wasm: \tunreachable");
     RETHROW(jit_emit_trap(builder, ctx));
     label->terminated = true;
 
@@ -88,8 +85,6 @@ cleanup:
 static wasm_err_t jit_wasm_nop(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
-    JIT_TRACE("wasm: \tnop");
-
 cleanup:
     return err;
 }
@@ -97,7 +92,6 @@ cleanup:
 static wasm_err_t jit_wasm_drop(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
-    JIT_TRACE("wasm: \tdrop");
     CHECK(label->stack.length >= 1);
     vec_pop(&label->stack);
 
@@ -107,8 +101,6 @@ cleanup:
 
 static wasm_err_t jit_wasm_select(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
-
-    JIT_TRACE("wasm: \tselect");
 
     spidir_value_t c = JIT_POP(SPIDIR_TYPE_I32);
     jit_value_t val2 = vec_pop(&label->stack);
@@ -154,7 +146,6 @@ static wasm_err_t jit_wasm_block(spidir_builder_handle_t builder, buffer_t* code
     wasm_err_t err = WASM_NO_ERROR;
 
     RETHROW(jit_wasm_pull_block_type(code));
-    JIT_TRACE("wasm: \tblock");
 
     // append a new label
     jit_label_t* new_label = vec_add(&func->labels, 1);
@@ -171,7 +162,6 @@ static wasm_err_t jit_wasm_loop(spidir_builder_handle_t builder, buffer_t* code,
     wasm_err_t err = WASM_NO_ERROR;
 
     RETHROW(jit_wasm_pull_block_type(code));
-    JIT_TRACE("wasm: \tloop");
 
     // append a new label
     jit_label_t* new_label = vec_add(&func->labels, 1);
@@ -283,7 +273,6 @@ static wasm_err_t jit_wasm_br(spidir_builder_handle_t builder, buffer_t* code, j
 
     // get the target
     uint32_t index = BUFFER_PULL_U32(code);
-    JIT_TRACE("wasm: \tbr %d", index);
     CHECK(index < func->labels.length);
     jit_label_t* target = &func->labels.elements[func->labels.length - index - 1];
 
@@ -305,7 +294,6 @@ static wasm_err_t jit_wasm_br_if(spidir_builder_handle_t builder, buffer_t* code
 
     // get the target
     uint32_t index = BUFFER_PULL_U32(code);
-    JIT_TRACE("wasm: \tbr.if %d", index);
     CHECK(index < func->labels.length);
     jit_label_t* target = &func->labels.elements[func->labels.length - index - 1];
 
@@ -347,8 +335,6 @@ static wasm_err_t jit_wasm_br_table(spidir_builder_handle_t builder, buffer_t* c
     CHECK(default_index < func->labels.length);
     jit_label_t* default_label = &func->labels.elements[func->labels.length - default_index - 1];
     RETHROW(jit_wasm_prepare_branch(builder, func, default_label));
-
-    JIT_TRACE("wasm: \tbr.table (...) %d", default_label);
 
     // the index that we want to choose
     spidir_value_t index = JIT_POP(SPIDIR_TYPE_I32);
@@ -398,8 +384,6 @@ cleanup:
 static wasm_err_t jit_wasm_return(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
-    JIT_TRACE("wasm: \treturn");
-
     // handle return value if any
     spidir_value_t value = SPIDIR_VALUE_INVALID;
     if (func->ret_type != SPIDIR_TYPE_NONE) {
@@ -421,7 +405,6 @@ static wasm_err_t jit_wasm_call(spidir_builder_handle_t builder, buffer_t* code,
 
     // prepare the function for jitting
     uint32_t funcidx = BUFFER_PULL_U32(code);
-    JIT_TRACE("wasm: \tcall %d", funcidx);
 
     RETHROW(jit_prepare_function(ctx, funcidx));
     jit_function_t* callee = &ctx->functions[funcidx];
@@ -472,7 +455,6 @@ static wasm_err_t jit_wasm_call_indirect(spidir_builder_handle_t builder, buffer
 
     uint32_t typeidx = BUFFER_PULL_U32(code);
     uint32_t tableidx = BUFFER_PULL_U32(code);
-    JIT_TRACE("wasm: \tcall_indirect %d %d", typeidx, tableidx);
 
     CHECK(typeidx < ctx->module->types_count);
     CHECK(tableidx < ctx->module->tables_count);
@@ -565,7 +547,6 @@ static wasm_err_t jit_wasm_local_get(spidir_builder_handle_t builder, buffer_t* 
     wasm_err_t err = WASM_NO_ERROR;
 
     uint32_t index = BUFFER_PULL_U32(code);
-    JIT_TRACE("wasm: \tlocal.get %d", index);
     CHECK(index < func->locals.length);
     spidir_value_t value = func->locals.elements[index].value;
     CHECK(value.id != SPIDIR_VALUE_INVALID.id);
@@ -579,7 +560,6 @@ static wasm_err_t jit_wasm_local_set(spidir_builder_handle_t builder, buffer_t* 
     wasm_err_t err = WASM_NO_ERROR;
 
     uint32_t index = BUFFER_PULL_U32(code);
-    JIT_TRACE("wasm: \tlocal.set %d", index);
     CHECK(index < func->locals.length);
     func->locals.elements[index].value = JIT_POP(func->locals.elements[index].type);
 
@@ -591,7 +571,6 @@ static wasm_err_t jit_wasm_local_tee(spidir_builder_handle_t builder, buffer_t* 
     wasm_err_t err = WASM_NO_ERROR;
 
     uint32_t index = BUFFER_PULL_U32(code);
-    JIT_TRACE("wasm: \tlocal.tee %d", index);
     CHECK(index < func->locals.length);
     spidir_value_type_t value_type = func->locals.elements[index].type;
     spidir_value_t value = JIT_POP(value_type);
@@ -606,7 +585,6 @@ static wasm_err_t jit_wasm_global_get(spidir_builder_handle_t builder, buffer_t*
     wasm_err_t err = WASM_NO_ERROR;
 
     uint32_t index = BUFFER_PULL_U32(code);
-    JIT_TRACE("wasm: \tglobal.get %d", index);
     CHECK(index < ctx->module->globals_count);
 
     spidir_value_type_t value_type = ctx->globals[index].type;
@@ -647,7 +625,6 @@ static wasm_err_t jit_wasm_global_set(spidir_builder_handle_t builder, buffer_t*
     wasm_err_t err = WASM_NO_ERROR;
 
     uint32_t index = BUFFER_PULL_U32(code);
-    JIT_TRACE("wasm: \tglobal.set %d", index);
     CHECK(index < ctx->module->globals_count);
 
     // ensure this is not an immutable value
@@ -739,11 +716,6 @@ static wasm_err_t jit_wasm_load(spidir_builder_handle_t builder, buffer_t* code,
     // get the memory argument
     wasm_mem_arg_t mem_arg = {};
     RETHROW(jit_pull_memarg(code, &mem_arg));
-    if (mem_arg.index == 0) {
-        JIT_TRACE("wasm: \t%s %d, %llu", g_wasm_opcode_names[opcode], 1 << mem_arg.align, (unsigned long long)mem_arg.offset);
-    } else {
-        JIT_TRACE("wasm: \t%s %d, %d, %llu", g_wasm_opcode_names[opcode], 1 << mem_arg.align, mem_arg.index, (unsigned long long)mem_arg.offset);
-    }
 
     // figure the exact parameters for the load
     spidir_value_type_t type;
@@ -811,11 +783,6 @@ static wasm_err_t jit_wasm_store(spidir_builder_handle_t builder, buffer_t* code
     // get the memory argument
     wasm_mem_arg_t mem_arg = {};
     RETHROW(jit_pull_memarg(code, &mem_arg));
-    if (mem_arg.index == 0) {
-        JIT_TRACE("wasm: \t%s %d, %llu", g_wasm_opcode_names[opcode], 1 << mem_arg.align, (unsigned long long)mem_arg.offset);
-    } else {
-        JIT_TRACE("wasm: \t%s %d, %d, %llu", g_wasm_opcode_names[opcode], 1 << mem_arg.align, mem_arg.index, (unsigned long long)mem_arg.offset);
-    }
 
     // figure the parameters for the store
     spidir_value_type_t type;
@@ -857,7 +824,6 @@ static wasm_err_t jit_wasm_memory_size(spidir_builder_handle_t builder, buffer_t
 
     // for now we don't have multi-memory support, so it is required to be at zero
     CHECK(BUFFER_PULL(uint8_t, code) == 0);
-    JIT_TRACE("wasm: \tmemory.size");
 
     spidir_funcref_t helper;
     RETHROW(jit_get_helper(ctx, JIT_HELPER_MEMORY_SIZE, &helper));
@@ -876,7 +842,6 @@ static wasm_err_t jit_wasm_memory_grow(spidir_builder_handle_t builder, buffer_t
 
     // for now we don't have multi-memory support, so it is required to be at zero
     CHECK(BUFFER_PULL(uint8_t, code) == 0);
-    JIT_TRACE("wasm: \tmemory.grow");
 
     spidir_value_t n = JIT_POP(SPIDIR_TYPE_I32);
 
@@ -898,7 +863,6 @@ static wasm_err_t jit_wasm_memory_init(spidir_builder_handle_t builder, buffer_t
     // for now we don't have multi-memory support, so it is required to be at zero
     uint32_t dataidx = BUFFER_PULL_U32(code);
     CHECK(BUFFER_PULL(uint8_t, code) == 0);
-    JIT_TRACE("wasm: \tmemory.init %d", dataidx);
 
     CHECK(dataidx < ctx->module->data_count);
     CHECK(ctx->data[dataidx].offset != -1);
@@ -939,7 +903,6 @@ static wasm_err_t jit_wasm_data_drop(spidir_builder_handle_t builder, buffer_t* 
 
     // for now we don't have multi-memory support, so it is required to be at zero
     uint32_t dataidx = BUFFER_PULL_U32(code);
-    JIT_TRACE("wasm: \tdata.drop %d", dataidx);
 
     CHECK(dataidx < ctx->module->data_count);
     CHECK(ctx->data[dataidx].offset != -1);
@@ -963,7 +926,6 @@ static wasm_err_t jit_wasm_memory_copy(spidir_builder_handle_t builder, buffer_t
     // for now we don't have multi-memory support, so it is required to be at zero
     CHECK(BUFFER_PULL(uint8_t, code) == 0);
     CHECK(BUFFER_PULL(uint8_t, code) == 0);
-    JIT_TRACE("wasm: \tmemory.copy");
 
     spidir_value_t n = JIT_POP(SPIDIR_TYPE_I32);
     spidir_value_t src = JIT_POP(SPIDIR_TYPE_I32);
@@ -989,7 +951,6 @@ static wasm_err_t jit_wasm_memory_fill(spidir_builder_handle_t builder, buffer_t
 
     // for now we don't have multi-memory support, so it is required to be at zero
     CHECK(BUFFER_PULL(uint8_t, code) == 0);
-    JIT_TRACE("wasm: \tmemory.fill");
 
     spidir_value_t n   = JIT_POP(SPIDIR_TYPE_I32);
     spidir_value_t val = JIT_POP(SPIDIR_TYPE_I32);
@@ -1034,7 +995,6 @@ static wasm_err_t jit_wasm_i32_const(spidir_builder_handle_t builder, buffer_t* 
     wasm_err_t err = WASM_NO_ERROR;
 
     int32_t value = BUFFER_PULL_I32(code);
-    JIT_TRACE("wasm: \ti32.const %d", value);
     JIT_PUSH(SPIDIR_TYPE_I32, spidir_builder_build_iconst(builder, SPIDIR_TYPE_I32, (uint32_t)value));
 
 cleanup:
@@ -1045,7 +1005,6 @@ static wasm_err_t jit_wasm_i64_const(spidir_builder_handle_t builder, buffer_t* 
     wasm_err_t err = WASM_NO_ERROR;
 
     int64_t value = BUFFER_PULL_I64(code);
-    JIT_TRACE("wasm: \ti64.const %lld", (long long)value);
     JIT_PUSH(SPIDIR_TYPE_I64, spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, value));
 
 cleanup:
@@ -1056,7 +1015,6 @@ static wasm_err_t jit_wasm_f32_const(spidir_builder_handle_t builder, buffer_t* 
     wasm_err_t err = WASM_NO_ERROR;
 
     float value = BUFFER_PULL(float, code);
-    JIT_TRACE("wasm: \tf32.const %f", value);
     JIT_PUSH(SPIDIR_TYPE_F32, spidir_builder_build_fconst32(builder, value));
 
 cleanup:
@@ -1067,7 +1025,6 @@ static wasm_err_t jit_wasm_f64_const(spidir_builder_handle_t builder, buffer_t* 
     wasm_err_t err = WASM_NO_ERROR;
 
     double value = BUFFER_PULL(double, code);
-    JIT_TRACE("wasm: \tf64.const %lf", value);
     JIT_PUSH(SPIDIR_TYPE_F64, spidir_builder_build_fconst64(builder, value));
 
 cleanup:
@@ -1085,7 +1042,6 @@ static wasm_err_t jit_wasm_cmpi(spidir_builder_handle_t builder, buffer_t* code,
     wasm_err_t err = WASM_NO_ERROR;
 
     uint8_t opcode = ((uint8_t*)code->data)[-1];
-    JIT_TRACE("wasm: \t%s", g_wasm_opcode_names[opcode]);
 
     // figure the exact type
     spidir_value_type_t type;
@@ -1140,7 +1096,6 @@ static wasm_err_t jit_wasm_cmpf(spidir_builder_handle_t builder, buffer_t* code,
     wasm_err_t err = WASM_NO_ERROR;
 
     uint8_t opcode = ((uint8_t*)code->data)[-1];
-    JIT_TRACE("wasm: \t%s", g_wasm_opcode_names[opcode]);
 
     // figure the exact type
     spidir_value_type_t type;
@@ -1194,7 +1149,6 @@ static wasm_err_t jit_wasm_iconv(spidir_builder_handle_t builder, buffer_t* code
     wasm_err_t err = WASM_NO_ERROR;
 
     uint8_t opcode = ((uint8_t*)code->data)[-1];
-    JIT_TRACE("wasm: \t%s", g_wasm_opcode_names[opcode]);
 
     switch (opcode) {
         case 0xA7: {
@@ -1240,7 +1194,6 @@ static wasm_err_t jit_wasm_itof(spidir_builder_handle_t builder, buffer_t* code,
     wasm_err_t err = WASM_NO_ERROR;
 
     uint8_t opcode = ((uint8_t*)code->data)[-1];
-    JIT_TRACE("wasm: \t%s", g_wasm_opcode_names[opcode]);
 
     spidir_value_type_t out_type;
     switch (opcode) {
@@ -1267,7 +1220,6 @@ static wasm_err_t jit_wasm_fconv(spidir_builder_handle_t builder, buffer_t* code
     wasm_err_t err = WASM_NO_ERROR;
 
     uint8_t opcode = ((uint8_t*)code->data)[-1];
-    JIT_TRACE("wasm: \t%s", g_wasm_opcode_names[opcode]);
 
     switch (opcode) {
         case 0xB6: {
@@ -1291,7 +1243,6 @@ static wasm_err_t jit_wasm_shift(spidir_builder_handle_t builder, buffer_t* code
     wasm_err_t err = WASM_NO_ERROR;
 
     uint8_t opcode = ((uint8_t*)code->data)[-1];
-    JIT_TRACE("wasm: \t%s", g_wasm_opcode_names[opcode]);
 
     spidir_value_type_t type;
     uint64_t mask;
@@ -1329,7 +1280,6 @@ static wasm_err_t jit_wasm_binopf(spidir_builder_handle_t builder, buffer_t* cod
     wasm_err_t err = WASM_NO_ERROR;
 
     uint8_t opcode = ((uint8_t*)code->data)[-1];
-    JIT_TRACE("wasm: \t%s", g_wasm_opcode_names[opcode]);
 
     spidir_value_type_t type;
     switch (opcode) {
@@ -1360,7 +1310,6 @@ static wasm_err_t jit_wasm_binopi(spidir_builder_handle_t builder, buffer_t* cod
     wasm_err_t err = WASM_NO_ERROR;
 
     uint8_t opcode = ((uint8_t*)code->data)[-1];
-    JIT_TRACE("wasm: \t%s", g_wasm_opcode_names[opcode]);
 
     // figure the exact type
     spidir_value_type_t type;
@@ -1412,6 +1361,88 @@ cleanup:
 // Atomic Instructions
 //----------------------------------------------------------------------------------------------------------------------
 
+static wasm_err_t jit_wasm_atomic_store(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint8_t sub_opcode = ((uint8_t*)code->data)[-1];
+
+    // get the memory argument
+    wasm_mem_arg_t mem_arg = {};
+    RETHROW(jit_pull_memarg(code, &mem_arg));
+
+    // figure the operand size
+    spidir_value_type_t type;
+    jit_helper_kind_t kind;
+    switch (sub_opcode) {
+        case 0x17: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_STORE_4; break;
+        case 0x18: type = SPIDIR_TYPE_I64; kind = JIT_HELPER_ATOMIC_STORE_8; break;
+        case 0x19: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_STORE_1; break;
+        case 0x1A: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_STORE_2; break;
+        default: CHECK_FAIL();
+    }
+
+    // get the values
+    spidir_value_t value = JIT_POP(type);
+    spidir_value_t offset = JIT_POP(SPIDIR_TYPE_I32);
+
+    // calculate the address
+    spidir_value_t addr = SPIDIR_VALUE_INVALID;
+    RETHROW(jit_wasm_calculate_addr(builder, &mem_arg, offset, &addr));
+
+    // get the helper
+    spidir_funcref_t helper;
+    RETHROW(jit_get_helper(ctx, kind, &helper));
+
+    // and call it 
+    spidir_value_t args[] = { addr, value };
+    spidir_builder_build_call(builder, helper, ARRAY_LENGTH(args), args);
+
+cleanup:
+    return err;
+}
+
+static wasm_err_t jit_wasm_atomic_load(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint8_t sub_opcode = ((uint8_t*)code->data)[-1];
+
+    // get the memory argument
+    wasm_mem_arg_t mem_arg = {};
+    RETHROW(jit_pull_memarg(code, &mem_arg));
+
+    // figure the operand size
+    spidir_value_type_t type;
+    jit_helper_kind_t kind;
+    switch (sub_opcode) {
+        case 0x10: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_LOAD_4; break;
+        case 0x11: type = SPIDIR_TYPE_I64; kind = JIT_HELPER_ATOMIC_LOAD_8; break;
+        case 0x12: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_LOAD_1; break;
+        case 0x13: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_LOAD_2; break;
+        default: CHECK_FAIL();
+    }
+
+    // get the values
+    spidir_value_t offset = JIT_POP(SPIDIR_TYPE_I32);
+
+    // calculate the address
+    spidir_value_t addr = SPIDIR_VALUE_INVALID;
+    RETHROW(jit_wasm_calculate_addr(builder, &mem_arg, offset, &addr));
+
+    // get the helper
+    spidir_funcref_t helper;
+    RETHROW(jit_get_helper(ctx, kind, &helper));
+
+    // and call it 
+    spidir_value_t args[] = { addr };
+    spidir_value_t value = spidir_builder_build_call(builder, helper, ARRAY_LENGTH(args), args);
+
+    // and push the result
+    JIT_PUSH(type, value);
+
+cleanup:
+    return err;
+}
+
 static wasm_err_t jit_wasm_atomic_rmw_cmpexchg(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -1420,11 +1451,6 @@ static wasm_err_t jit_wasm_atomic_rmw_cmpexchg(spidir_builder_handle_t builder, 
     // get the memory argument
     wasm_mem_arg_t mem_arg = {};
     RETHROW(jit_pull_memarg(code, &mem_arg));
-    if (mem_arg.index == 0) {
-        JIT_TRACE("wasm: \t%s %d, %llu", g_wasm_atomic_opcode_names[opcode], 1 << mem_arg.align, (unsigned long long)mem_arg.offset);
-    } else {
-        JIT_TRACE("wasm: \t%s %d, %d, %llu", g_wasm_atomic_opcode_names[opcode], 1 << mem_arg.align, mem_arg.index, (unsigned long long)mem_arg.offset);
-    }
 
     // figure the operand size
     spidir_value_type_t type;
@@ -1464,7 +1490,9 @@ static wasm_err_t jit_wasm_atomic_prefix(spidir_builder_handle_t builder, buffer
 
     uint32_t sub = BUFFER_PULL_U32(code);
     switch (sub) {
-        case 0x48 ... 0x4B:  RETHROW(jit_wasm_atomic_rmw_cmpexchg(builder, code, ctx, func, label)); break;
+        case 0x10 ... 0x13: RETHROW(jit_wasm_atomic_load(builder, code, ctx, func, label)); break;
+        case 0x17 ... 0x1A: RETHROW(jit_wasm_atomic_store(builder, code, ctx, func, label)); break;
+        case 0x48 ... 0x4B: RETHROW(jit_wasm_atomic_rmw_cmpexchg(builder, code, ctx, func, label)); break;
         default: CHECK_FAIL("Unsupported atomic sub-opcode %x", sub);
     }
 
@@ -1478,8 +1506,6 @@ cleanup:
 
 static wasm_err_t jit_wasm_end(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
-
-    JIT_TRACE("wasm: \tend");
 
     if (func->labels.length == 1) {
         // can't be a loop
