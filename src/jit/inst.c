@@ -10,6 +10,7 @@
 #include "util/string.h"
 #include "wasm/error.h"
 #include "wasm/host.h"
+#include "wasm/wasm.h"
 #include <stdint.h>
 
 #define JIT_PUSH(_type, _value) \
@@ -633,6 +634,32 @@ cleanup:
     return err;
 }
 
+static wasm_err_t jit_wasm_calculate_addr(spidir_builder_handle_t builder, wasm_mem_arg_t* mem_arg, spidir_value_t offset, spidir_value_t* abs_addr) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    // extend the offset to 64bit
+    offset = spidir_builder_build_iext(builder, offset);
+    offset = spidir_builder_build_and(builder, offset,
+        spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, 0xFFFFFFFF));
+
+    // if we have an offset add it
+    if (mem_arg->offset != 0) {
+        // because we ensure the offset is at most 32bit, the addition will be 33bit, the runtime
+        // ensures an 8GB region per memory instance, so it will always trap no matter what value 
+        // it gets in here
+        CHECK(mem_arg->offset <= UINT32_MAX);
+        offset = spidir_builder_build_iadd(builder, offset,
+            spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, mem_arg->offset));
+    }
+
+    // load the value
+    spidir_value_t mem_base = spidir_builder_build_param_ref(builder, 0);
+    *abs_addr = spidir_builder_build_ptroff(builder, mem_base, offset);
+
+cleanup:
+    return err;
+}
+
 static wasm_err_t jit_wasm_load(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -673,27 +700,14 @@ static wasm_err_t jit_wasm_load(spidir_builder_handle_t builder, buffer_t* code,
     // get the value and offset, the value type depends on the instruction
     spidir_value_t offset = JIT_POP(SPIDIR_TYPE_I32);
 
-    // extend the offset to 64bit
-    offset = spidir_builder_build_iext(builder, offset);
-    offset = spidir_builder_build_and(builder, offset,
-        spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, 0xFFFFFFFF));
+    // calculate the address
+    spidir_value_t addr = SPIDIR_VALUE_INVALID;
+    RETHROW(jit_wasm_calculate_addr(builder, &mem_arg, offset, &addr));
 
-    // if we have an offset add it
-    if (mem_arg.offset != 0) {
-        // because we ensure the offset is at most 32bit, the addition will be 33bit, the runtime
-        // ensures an 8GB region per memory instance, so it will always trap no matter what value 
-        // it gets in here
-        CHECK(mem_arg.offset <= UINT32_MAX);
-        offset = spidir_builder_build_iadd(builder, offset,
-            spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, mem_arg.offset));
-    }
-
-    // load the value
-    spidir_value_t mem_base = spidir_builder_build_param_ref(builder, 0);
     spidir_value_t value = spidir_builder_build_load(
         builder,
         mem_size, type,
-        spidir_builder_build_ptroff(builder, mem_base, offset)
+        addr
     );
 
     if (sign_extend != 0) {
@@ -752,27 +766,15 @@ static wasm_err_t jit_wasm_store(spidir_builder_handle_t builder, buffer_t* code
     spidir_value_t value = JIT_POP(type);
     spidir_value_t offset = JIT_POP(SPIDIR_TYPE_I32);
 
-    // extend the offset to 64bit
-    offset = spidir_builder_build_iext(builder, offset);
-    offset = spidir_builder_build_and(builder, offset,
-        spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, 0xFFFFFFFF));
+    // calculate the address
+    spidir_value_t addr = SPIDIR_VALUE_INVALID;
+    RETHROW(jit_wasm_calculate_addr(builder, &mem_arg, offset, &addr));
 
-    // if we have an offset add it
-    if (mem_arg.offset != 0) {
-        // because we ensure the offset is at most 32bit, the addition will be 33bit, the runtime
-        // ensures an 8GB region per memory instance, so it will always trap no matter what value 
-        // it gets in here
-        CHECK(mem_arg.offset <= UINT32_MAX);
-        offset = spidir_builder_build_iadd(builder, offset,
-            spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, mem_arg.offset));
-    }
-
-    spidir_value_t mem_base = spidir_builder_build_param_ref(builder, 0);
     spidir_builder_build_store(
         builder,
         mem_size,
         value,
-        spidir_builder_build_ptroff(builder, mem_base, offset)
+        addr
     );
 
 cleanup:
@@ -871,7 +873,7 @@ static wasm_err_t jit_wasm_bulk_memory_prefix(spidir_builder_handle_t builder, b
     switch (sub) {
         case 10: RETHROW(jit_wasm_memory_copy(builder, code, ctx, func, label)); break;
         case 11: RETHROW(jit_wasm_memory_fill(builder, code, ctx, func, label)); break;
-        default: CHECK_FAIL("Unsupported bulk-memory sub-opcode %u", sub);
+        default: CHECK_FAIL("Unsupported bulk-memory sub-opcode %x", sub);
     }
 
 cleanup:
@@ -1266,12 +1268,60 @@ cleanup:
 // Atomic Instructions
 //----------------------------------------------------------------------------------------------------------------------
 
+static wasm_err_t jit_wasm_atomic_rmw_cmpexchg(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint8_t sub_opcode = ((uint8_t*)code->data)[-1];
+
+    // get the memory argument
+    wasm_mem_arg_t mem_arg = {};
+    RETHROW(jit_pull_memarg(code, &mem_arg));
+    if (mem_arg.index == 0) {
+        JIT_TRACE("wasm: \t%s %d, %llu", g_wasm_atomic_opcode_names[opcode], 1 << mem_arg.align, (unsigned long long)mem_arg.offset);
+    } else {
+        JIT_TRACE("wasm: \t%s %d, %d, %llu", g_wasm_atomic_opcode_names[opcode], 1 << mem_arg.align, mem_arg.index, (unsigned long long)mem_arg.offset);
+    }
+
+    // figure the operand size
+    spidir_value_type_t type;
+    jit_helper_kind_t kind;
+    switch (sub_opcode) {
+        case 0x48: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_RMW_CMPXCHG_4; break;
+        case 0x49: type = SPIDIR_TYPE_I64; kind = JIT_HELPER_ATOMIC_RMW_CMPXCHG_8; break;
+        case 0x4A: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_RMW_CMPXCHG_1; break;
+        case 0x4B: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_RMW_CMPXCHG_2; break;
+        default: CHECK_FAIL();
+    }
+
+    // get the values
+    spidir_value_t replacement = JIT_POP(type);
+    spidir_value_t expected = JIT_POP(type);
+    spidir_value_t offset = JIT_POP(SPIDIR_TYPE_I32);
+
+    // calculate the address
+    spidir_value_t addr = SPIDIR_VALUE_INVALID;
+    RETHROW(jit_wasm_calculate_addr(builder, &mem_arg, offset, &addr));
+
+    // get the helper
+    spidir_funcref_t helper;
+    RETHROW(jit_get_helper(ctx, kind, &helper));
+
+    // and call it 
+    spidir_value_t args[] = { addr, expected, replacement };
+    spidir_value_t value = spidir_builder_build_call(builder, helper, ARRAY_LENGTH(args), args);
+    JIT_PUSH(type, value);
+
+cleanup:
+    return err;
+}
+
 static wasm_err_t jit_wasm_atomic_prefix(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
     uint32_t sub = BUFFER_PULL_U32(code);
     switch (sub) {
-        default: CHECK_FAIL("Unsupported atomic sub-opcode %u", sub);
+        case 0x48 ... 0x4B:  RETHROW(jit_wasm_atomic_rmw_cmpexchg(builder, code, ctx, func, label)); break;
+        default: CHECK_FAIL("Unsupported atomic sub-opcode %x", sub);
     }
 
 cleanup:

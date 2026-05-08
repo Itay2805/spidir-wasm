@@ -1,4 +1,5 @@
 #include "opcodes.h"
+#include "util/defs.h"
 
 const char* const g_wasm_opcode_names[256] = {
     [0x28] = "i32.load",
@@ -160,3 +161,84 @@ const char* const g_wasm_opcode_names[256] = {
     [0xC3] = "i64.extend16_s",
     [0xC4] = "i64.extend32_s",
 };
+const size_t g_wasm_opcode_names_count = ARRAY_LENGTH(g_wasm_opcode_names);
+
+const char* const g_wasm_atomic_opcode_names[256] = {
+    [0x00] = "memory.atomic.notify",
+    [0x01] = "memory.atomic.wait32",
+    [0x02] = "memory.atomic.wait64",
+
+    [0x03] = "atomic.fence",
+
+    [0x10] = "i32.atomic.load",
+    [0x11] = "i64.atomic.load",
+    [0x12] = "i32.atomic.load8_u",
+    [0x13] = "i32.atomic.load16_u",
+    [0x14] = "i64.atomic.load8_u",
+    [0x15] = "i64.atomic.load16_u",
+    [0x16] = "i64.atomic.load32_u",
+    [0x17] = "i32.atomic.store",
+    [0x18] = "i64.atomic.store",
+    [0x19] = "i32.atomic.store8",
+    [0x1A] = "i32.atomic.store16",
+    [0x1B] = "i64.atomic.store8",
+    [0x1C] = "i64.atomic.store16",
+    [0x1D] = "i64.atomic.store32",
+
+    [0x1E] = "i32.atomic.rmw.add",
+    [0x1F] = "i64.atomic.rmw.add",
+    [0x20] = "i32.atomic.rmw8.add_u",
+    [0x21] = "i32.atomic.rmw16.add_u",
+    [0x22] = "i64.atomic.rmw8.add_u",
+    [0x23] = "i64.atomic.rmw16.add_u",
+    [0x24] = "i64.atomic.rmw32.add_u",
+
+    [0x25] = "i32.atomic.rmw.sub",
+    [0x26] = "i64.atomic.rmw.sub",
+    [0x27] = "i32.atomic.rmw8.sub_u",
+    [0x28] = "i32.atomic.rmw16.sub_u",
+    [0x29] = "i64.atomic.rmw8.sub_u",
+    [0x2A] = "i64.atomic.rmw16.sub_u",
+    [0x2B] = "i64.atomic.rmw32.sub_u",
+
+    [0x2C] = "i32.atomic.rmw.and",
+    [0x2D] = "i64.atomic.rmw.and",
+    [0x2E] = "i32.atomic.rmw8.and_u",
+    [0x2F] = "i32.atomic.rmw16.and_u",
+    [0x30] = "i64.atomic.rmw8.and_u",
+    [0x31] = "i64.atomic.rmw16.and_u",
+    [0x32] = "i64.atomic.rmw32.and_u",
+
+    [0x33] = "i32.atomic.rmw.or",
+    [0x34] = "i64.atomic.rmw.or",
+    [0x35] = "i32.atomic.rmw8.or_u",
+    [0x36] = "i32.atomic.rmw16.or_u",
+    [0x37] = "i64.atomic.rmw8.or_u",
+    [0x38] = "i64.atomic.rmw16.or_u",
+    [0x39] = "i64.atomic.rmw32.or_u",
+
+    [0x3A] = "i32.atomic.rmw.xor",
+    [0x3B] = "i64.atomic.rmw.xor",
+    [0x3C] = "i32.atomic.rmw8.xor_u",
+    [0x3D] = "i32.atomic.rmw16.xor_u",
+    [0x3E] = "i64.atomic.rmw8.xor_u",
+    [0x3F] = "i64.atomic.rmw16.xor_u",
+    [0x40] = "i64.atomic.rmw32.xor_u",
+
+    [0x41] = "i32.atomic.rmw.xchg",
+    [0x42] = "i64.atomic.rmw.xchg",
+    [0x43] = "i32.atomic.rmw8.xchg_u",
+    [0x44] = "i32.atomic.rmw16.xchg_u",
+    [0x45] = "i64.atomic.rmw8.xchg_u",
+    [0x46] = "i64.atomic.rmw16.xchg_u",
+    [0x47] = "i64.atomic.rmw32.xchg_u",
+
+    [0x48] = "i32.atomic.rmw.cmpxchg",
+    [0x49] = "i64.atomic.rmw.cmpxchg",
+    [0x4A] = "i32.atomic.rmw8.cmpxchg_u",
+    [0x4B] = "i32.atomic.rmw16.cmpxchg_u",
+    [0x4C] = "i64.atomic.rmw8.cmpxchg_u",
+    [0x4D] = "i64.atomic.rmw16.cmpxchg_u",
+    [0x4E] = "i64.atomic.rmw32.cmpxchg_u",
+};
+const size_t g_wasm_atomic_opcode_names_count = ARRAY_LENGTH(g_wasm_atomic_opcode_names);
