@@ -42,15 +42,16 @@ WASI_RT_LIB := $(WASI_RT_DIR)/lib/wasm32-unknown-wasi/libclang_rt.builtins.a
 include ../scripts/defs.mk
 
 # Common cflags for all apps
-cflags-y += --target=wasm32
+cflags-y += --target=wasm32-wasip1-threads
+cflags-y += --sysroot=$(WASI_SYSROOT)
 cflags-y += -Wall -Werror -std=gnu23
 cflags-y += -flto -g
 cflags-y += -fvisibility=hidden
 
-ldflags-y += --target=wasm32
+ldflags-y += --target=wasm32-wasip1-threads
+ldflags-y += --sysroot=$(WASI_SYSROOT)
 ldflags-y += -resource-dir=$(abspath $(WASI_RT_DIR))
 ldflags-y += -flto
-ldflags-y += -nostdlib
 
 cflags-$(OPTIMIZE) += -O3
 
@@ -83,6 +84,14 @@ quiet_cmd_fetch_sysroot = FETCH   $(WASI_SYSROOT_URL)
                           mkdir -p $(WASI_SYSROOT) && \
                           curl -sSfL $(WASI_SYSROOT_URL) \
                             | tar -xz -C $(WASI_SYSROOT) --strip-components=1
+
+$(WASI_SYSROOT_STAMP): FORCE
+	$(call cmd,fetch_sysroot)
+
+targets += $(WASI_SYSROOT_STAMP)
+
+# Compiles also need the sysroot headers.
+ccodeps-y += $(WASI_SYSROOT_STAMP)
 
 # Auto-discover tests:
 #   - cases/<name>.c   → build/<name> (compiled+linked via clang/wasi-sdk)

@@ -43,8 +43,10 @@ void wasm_module_free(wasm_module_t* module) {
         wasm_host_free(module->imports[i].module_name);
     }
 
-    for (int i = 0; i < module->functions_count; i++) {
-        wasm_host_free(module->code[i].code);
+    if (module->code != nullptr) {
+        for (int i = 0; i < module->functions_count; i++) {
+            wasm_host_free(module->code[i].code);
+        }
     }
 
     for (int i = 0; i < module->exports_count; i++) {
@@ -77,6 +79,8 @@ void wasm_module_free(wasm_module_t* module) {
     wasm_host_free(module->tables);
     wasm_host_free(module->elems);
     wasm_host_free(module->code);
+
+    memset(module, 0, sizeof(*module));
 }
 
 static wasm_err_t module_pull_magic_version(buffer_t* buffer) {
@@ -291,7 +295,7 @@ static wasm_err_t wasm_parse_memory_section(wasm_module_t* module, buffer_t* buf
         module->memory_min = BUFFER_PULL_U64(buffer);
         module->memory_max = BUFFER_PULL_U64(buffer);
     } else {
-        CHECK_FAIL("Invalid limit %02x", limit_type);
+        CHECK_FAIL("Invalid memory limit %02x", limit_type);
     }
 
     // ensure the min is less or equals to the max

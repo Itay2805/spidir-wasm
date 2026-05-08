@@ -13,6 +13,8 @@
 #include <util/except.h>
 #include <spidir/log.h>
 
+#include "wasi.h"
+
 #include "wasm/error.h"
 #include "wasm/host.h"
 
@@ -140,6 +142,8 @@ static void* resolve_import(void* arg, const char* module, const char* name, was
         if (strcmp(name, "add_i32") == 0) return host_env_add_i32;
         if (strcmp(name, "mul_i64") == 0) return host_env_mul_i64;
         if (strcmp(name, "magic") == 0)   return host_env_magic;
+    } else if (strcmp(module, "wasi_snapshot_preview1") == 0) {
+        return wasip1_resolve_import(name);
     }
     return nullptr;
 }

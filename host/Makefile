@@ -1,6 +1,7 @@
 bins-$(HOST) += main
 
 main-y += host/main.c
+main-y += host/wasi.c
 main-y += host/spidir_platform.c
 
 cflags-main-y += -Iinclude
