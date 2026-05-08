@@ -320,6 +320,75 @@ cleanup:
     return err;
 }
 
+static wasm_err_t jit_wasm_br_table(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+    jit_label_t** table = nullptr;
+
+    // get the table
+    uint32_t table_size = BUFFER_PULL_U32(code);
+    table = CALLOC(jit_label_t*, table_size);
+    CHECK(table != nullptr);
+
+    for (int64_t i = 0; i < table_size; i++) {
+        uint32_t index = BUFFER_PULL_U32(code);
+        CHECK(index < func->labels.length);
+        table[i] = &func->labels.elements[func->labels.length - index - 1];
+        RETHROW(jit_wasm_prepare_branch(builder, func, table[i]));
+    }
+
+    // the default case 
+    uint32_t default_index = BUFFER_PULL_U32(code);
+    CHECK(default_index < func->labels.length);
+    jit_label_t* default_label = &func->labels.elements[func->labels.length - default_index - 1];
+    RETHROW(jit_wasm_prepare_branch(builder, func, default_label));
+
+    JIT_TRACE("wasm: \tbr.table (...) %d", default_label);
+
+    // the index that we want to choose
+    spidir_value_t index = JIT_POP(SPIDIR_TYPE_I32);
+
+    // the next case to check, for us its the first one
+    spidir_block_t try_next_case = spidir_builder_create_block(builder);
+
+    // start with the simplest check, if its less than the case count 
+    // start checking cases, otherwise go directly to the default case
+    spidir_builder_build_brcond(builder,
+        spidir_builder_build_icmp(builder, SPIDIR_ICMP_ULT, SPIDIR_TYPE_I32, index,
+            spidir_builder_build_iconst(builder, SPIDIR_TYPE_I32, table_size)),
+            try_next_case, default_label->block);
+
+    for (int64_t i = 0; i < table_size; i++) {
+        spidir_builder_set_block(builder, try_next_case);
+        spidir_block_t target = table[i]->block;
+
+        if (i == table_size - 1) {
+            // we are the last case, we can just jump into the real target
+            // NOTE: in theory we could avoid this branch by having the code
+            //       always use the brcond in the other path, but that does not 
+            //       handle a table of a single entry nicely, this does
+            spidir_builder_build_branch(builder, target);
+
+        } else {
+            // create the block for the next case
+            try_next_case = spidir_builder_create_block(builder);
+            
+            // and emit the check with the current value
+            spidir_builder_build_brcond(builder,
+            spidir_builder_build_icmp(builder, SPIDIR_ICMP_EQ, SPIDIR_TYPE_I32, index,
+                spidir_builder_build_iconst(builder, SPIDIR_TYPE_I32, i)),
+                target, try_next_case);
+        }
+    }
+
+    // block is now terminated
+    label->terminated = true;
+
+cleanup:
+    wasm_host_free(table);
+
+    return err;
+}
+
 static wasm_err_t jit_wasm_return(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -1412,6 +1481,7 @@ wasm_err_t jit_wasm_opcode(spidir_builder_handle_t builder, buffer_t* code, jit_
         case 0x03: RETHROW(jit_wasm_loop(builder, code, ctx, func, label)); break;
         case 0x0C: RETHROW(jit_wasm_br(builder, code, ctx, func, label)); break;
         case 0x0D: RETHROW(jit_wasm_br_if(builder, code, ctx, func, label)); break;
+        case 0x0E: RETHROW(jit_wasm_br_table(builder, code, ctx, func, label)); break;
         case 0x0F: RETHROW(jit_wasm_return(builder, code, ctx, func, label)); break;
         case 0x10: RETHROW(jit_wasm_call(builder, code, ctx, func, label)); break;
         case 0x11: RETHROW(jit_wasm_call_indirect(builder, code, ctx, func, label)); break;

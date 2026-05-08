@@ -363,15 +363,16 @@ int main(int argc, char** argv) {
     // use the start func if exists, otherwise search
     // for an _start implicitly
     int64_t index;
+    int (*entry)(void* memory, void* state) = nullptr;
     if (m_module.start_func >= 0) {
-        index = m_module.start_func;
+        entry = m_module_jit.start_func;
     } else {
         index = wasm_find_export(&m_module, "_start");
         CHECK(index >= 0);
+        entry = m_module_jit.exports[index].func.address;
     }
 
     // get the entry point and run it
-    int (*entry)(void* memory, void* state) = m_module_jit.exports[index].func.address;
     status = entry(m_memory_base, state_base);
 
 cleanup:

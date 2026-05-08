@@ -142,6 +142,9 @@ typedef struct wasm_module_jit {
     // Always present after a successful jit (even if there are no functions —
     // the bounds are still meaningful).
     wasm_jit_debug_info_t debug;
+
+    // the jitted start function
+    void* start_func;
 } wasm_module_jit_t;
 
 wasm_err_t wasm_module_jit(wasm_module_t* module, wasm_module_jit_t* jitted_module, wasm_jit_config_t* config);

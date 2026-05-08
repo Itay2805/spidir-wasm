@@ -1,9 +1,11 @@
 #include "wasm/jit.h"
 
 #include "function.h"
+#include "jit/helpers.h"
 #include "jit_internal.h"
 #include "buffer.h"
 
+#include "spidir/module.h"
 #include "util/defs.h"
 #include "util/except.h"
 #include "util/string.h"
@@ -88,6 +90,11 @@ static wasm_err_t jit_emit_spidir(jit_context_t* ctx) {
         }
     }
 
+    // And the entry-function should also be jitted
+    if (ctx->module->start_func >= 0) {
+        RETHROW(jit_prepare_function(ctx, ctx->module->start_func));
+    }
+
     // prepare the IR for everything
     while (ctx->queue.length != 0) {
         uint32_t funcidx = vec_pop(&ctx->queue);
@@ -152,6 +159,30 @@ typedef union code_map_entry {
     };
     uint64_t value;
 } code_map_entry_t;
+
+static wasm_err_t jit_get_function_addr(uint32_t index, jit_context_t* ctx, void* jit_code, hmap_t* code_map, void** out_addr) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    CHECK(ctx->functions[index].inited);
+    spidir_funcref_t funcref = ctx->functions[index].spidir;
+
+    if (spidir_funcref_is_external(funcref)) {
+        *out_addr = ctx->functions[index].address;
+
+    } else if (spidir_funcref_is_internal(funcref)) {
+        // get the entry
+        code_map_entry_t entry = {};
+        CHECK(hmap_lookup(code_map, spidir_funcref_get_internal(funcref).id, &entry.value));
+
+        // add the exported function as an indirect target
+        *out_addr = jit_get_indirect(jit_code + entry.code_offset);
+    } else {
+        CHECK_FAIL();
+    }
+
+cleanup:
+    return err;
+}
 
 static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm_jit_config_t* config) {
     wasm_err_t err = WASM_NO_ERROR;
@@ -477,19 +508,7 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
         uint32_t index = ctx->module->exports[i].index;
 
         if (kind == WASM_EXPORT_FUNC) {
-            CHECK(ctx->functions[index].inited);
-            spidir_funcref_t funcref = ctx->functions[index].spidir;
-
-            // TODO: I think its possible to export an import (?)
-            CHECK(spidir_funcref_is_internal(funcref));
-
-            // get the entry
-            code_map_entry_t entry = {};
-            CHECK(hmap_lookup(&code_map, spidir_funcref_get_internal(funcref).id, &entry.value));
-
-            // add the exported function as an indirect target
-            void* target = jit_get_indirect(jit_code + entry.code_offset);
-            jit->exports[i].func.address = target;
+            RETHROW(jit_get_function_addr(index, ctx, jit_code, &code_map, &jit->exports[i].func.address));
 
         } else if (kind == WASM_EXPORT_GLOBAL) {
             // get the global's offset
@@ -508,6 +527,11 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
     // entries via jit_get_indirect, so it must run before we lock the
     // RX region below.
     RETHROW(jit_build_state_init(ctx, jit, jit_code, &code_map));
+
+    // save the entry function
+    if (ctx->module->start_func >= 0) {
+        RETHROW(jit_get_function_addr(ctx->module->start_func, ctx, jit_code, &code_map, &jit->start_func));
+    }
 
     // we are finished with jitting, we can lock the region and
     // let everything use it
@@ -619,26 +643,8 @@ static wasm_err_t jit_build_state_init(jit_context_t* ctx, wasm_module_jit_t* ji
 
         // lay out all of the functions in the elements
         for (int64_t j = 0; j < elem->funcs_count; j++) {
-            uint32_t fidx = elem->funcs[j];
-            CHECK(ctx->functions[fidx].inited);
-
-            // Indirect call slots must point at a real function. 
-            // We currently only support targeting internal functions.
-            // imports/externals would need their resolved address
-            // baked into the table here too.
-            spidir_funcref_t fr = ctx->functions[fidx].spidir;
-            CHECK(spidir_funcref_is_internal(fr),
-                  "elem segment funcidx %u points at a non-internal function", fidx);
-
-            code_map_entry_t entry = {};
-            CHECK(hmap_lookup(code_map, spidir_funcref_get_internal(fr).id, &entry.value));
-
-            // Use the indirect (endbr64) entry so the call target is
-            // identical to what gets exposed for direct exports.
-            void* target = jit_get_indirect(jit_code + entry.code_offset);
-
             void** slots = jit->state_init + table->offset;
-            slots[elem->offset + j] = target;
+            RETHROW(jit_get_function_addr(elem->funcs[j], ctx, jit_code, code_map, &slots[elem->offset + j]));
         }
     }
 
