@@ -3,8 +3,8 @@
 #include "buffer.h"
 #include "util/defs.h"
 #include "util/except.h"
-#include "util/string.h"
 #include "wasm/host.h"
+#include <stdint.h>
 
 typedef enum wasm_section_id : uint8_t {
     WASM_SECTION_CUSTOM = 0,
@@ -57,8 +57,8 @@ void wasm_module_free(wasm_module_t* module) {
         wasm_host_free(module->elems[i].funcs);
     }
 
-    for (int i = 0; i < module->data_segments_count; i++) {
-        wasm_host_free(module->data_segments[i].data);
+    for (int i = 0; i < module->data_count; i++) {
+        wasm_host_free(module->data[i].data);
     }
 
     if (module->function_names != nullptr) {
@@ -70,7 +70,7 @@ void wasm_module_free(wasm_module_t* module) {
 
     wasm_host_free(module->module_name);
     wasm_host_free(module->function_names);
-    wasm_host_free(module->data_segments);
+    wasm_host_free(module->data);
     wasm_host_free(module->types);
     wasm_host_free(module->imports);
     wasm_host_free(module->functions);
@@ -485,33 +485,59 @@ static wasm_err_t wasm_parse_data_section(wasm_module_t* module, buffer_t* buffe
     void* data = nullptr;
 
     uint32_t count = BUFFER_PULL_U32(buffer);
-    module->data_segments = CALLOC(wasm_data_segment_t, count);
-    CHECK(module->data_segments != nullptr);
-    module->data_segments_count = count;
+    module->data = CALLOC(wasm_data_t, count);
+    CHECK(module->data != nullptr);
+    module->data_count = count;
 
     for (int i = 0; i < count; i++) {
         uint32_t kind = BUFFER_PULL_U32(buffer);
-        CHECK(kind == 0, "Unsupported data segment kind %u", kind);
+        if (kind == 0) {
+            // find the offset
+            wasm_value_t offset_expr = {};
+            RETHROW(wasm_parse_constant_expr(buffer, &offset_expr));
+            CHECK(offset_expr.kind == WASM_VALUE_TYPE_I32);
 
-        // active segment, default memidx 0, offset is a constant expr
-        wasm_value_t offset_expr = {};
-        RETHROW(wasm_parse_constant_expr(buffer, &offset_expr));
-        CHECK(offset_expr.kind == WASM_VALUE_TYPE_I32);
+            // get the data
+            uint32_t len = BUFFER_PULL_U32(buffer);
+            void* src = buffer_pull(buffer, len);
+            CHECK(src != nullptr);
 
-        uint32_t len = BUFFER_PULL_U32(buffer);
-        void* src = buffer_pull(buffer, len);
-        CHECK(src != nullptr);
+            data = wasm_host_calloc(1, len);
+            CHECK(len == 0 || data != nullptr);
+            memcpy(data, src, len);
 
-        data = wasm_host_calloc(1, len);
-        CHECK(len == 0 || data != nullptr);
-        memcpy(data, src, len);
+            // setup the segment
+            module->data[i] = (wasm_data_t){
+                .offset = (uint32_t)offset_expr.value.i32,
+                .len = len,
+                .data = data,
+                .active = true
+            };
+            data = nullptr;
 
-        module->data_segments[i] = (wasm_data_segment_t){
-            .offset = (uint32_t)offset_expr.value.i32,
-            .len = len,
-            .data = data,
-        };
-        data = nullptr;
+        } else if (kind == 1) {
+            // get the data
+            uint32_t len = BUFFER_PULL_U32(buffer);
+            void* src = buffer_pull(buffer, len);
+            CHECK(src != nullptr);
+
+            data = wasm_host_calloc(1, len);
+            CHECK(len == 0 || data != nullptr);
+            memcpy(data, src, len);
+
+            // setup the segment
+            module->data[i] = (wasm_data_t){
+                .offset = 0,
+                .len = len,
+                .data = data,
+                .active = false
+            };
+            data = nullptr;
+
+        } else {
+            CHECK_FAIL("Unsupported data segment kind %u", kind);
+        }
+
     }
 
     CHECK(buffer->len == 0);
@@ -751,6 +777,7 @@ wasm_err_t wasm_load_module(wasm_module_t* module, void* data, size_t size) {
             case WASM_SECTION_ELEMENT: RETHROW(wasm_parse_element_section(module, contents)); break;
             case WASM_SECTION_CODE: RETHROW(wasm_parse_code_section(module, contents)); break;
             case WASM_SECTION_DATA: RETHROW(wasm_parse_data_section(module, contents)); break;
+            case WASM_SECTION_DATA_COUNT: /* we don't care for this, but maybe we should validate regardless? */ break;
 
             default: {
                 CHECK_FAIL("wasm: unknown section %d", section.id);
@@ -764,6 +791,14 @@ cleanup:
     }
 
     return err;
+}
+
+void wasm_module_init_memory(wasm_module_t* module, void* memory) {
+    for (int64_t i = 0; i < module->data_count; i++) {
+        wasm_data_t* data = &module->data[i];
+        if (!data->active) continue;
+        memcpy(memory + data->offset, data->data, data->len);
+    }
 }
 
 int64_t wasm_find_export(wasm_module_t* module, const char* name) {

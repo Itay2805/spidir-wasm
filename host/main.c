@@ -357,20 +357,8 @@ int main(int argc, char** argv) {
         CHECK(mapped == m_memory_base);
     }
 
-    // Apply each active data segment into the freshly-mapped memory.
-    // Per spec, the destination range must fit inside the current size,
-    // otherwise instantiation traps. We compute end via uint64 to catch
-    // u32 overflow without relying on a runtime page-fault.
-    for (uint32_t i = 0; i < m_module.data_segments_count; i++) {
-        wasm_data_segment_t* seg = &m_module.data_segments[i];
-        uint64_t end = (uint64_t)seg->offset + seg->len;
-        CHECK(end <= m_memory_size,
-              "data segment %u exceeds memory size (%llu > %zu)",
-              i, (unsigned long long)end, m_memory_size);
-        if (seg->len != 0) {
-            memcpy((char*)m_memory_base + seg->offset, seg->data, seg->len);
-        }
-    }
+    // setup the memory of the new module
+    wasm_module_init_memory(&m_module, m_memory_base);
 
     // use the start func if exists, otherwise search
     // for an _start implicitly
