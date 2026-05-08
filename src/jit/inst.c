@@ -1339,6 +1339,39 @@ cleanup:
     return err;
 }
 
+static wasm_err_t jit_wasm_unaryopi(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint8_t opcode = ((uint8_t*)code->data)[-1];
+
+    // figure the exact type and helper to use
+    spidir_value_type_t type;
+    jit_helper_kind_t helper;
+    switch (opcode) {
+        case 0x67: type = SPIDIR_TYPE_I32; helper = JIT_HELPER_I32_CLZ; break;
+        case 0x68: type = SPIDIR_TYPE_I32; helper = JIT_HELPER_I32_CTZ; break;
+        case 0x69: type = SPIDIR_TYPE_I32; helper = JIT_HELPER_I32_POPCNT; break;
+        case 0x79: type = SPIDIR_TYPE_I64; helper = JIT_HELPER_I64_CLZ; break;
+        case 0x7A: type = SPIDIR_TYPE_I64; helper = JIT_HELPER_I64_CTZ; break;
+        case 0x7B: type = SPIDIR_TYPE_I64; helper = JIT_HELPER_I64_POPCNT; break;
+        default: CHECK_FAIL();
+    }
+
+    // get the value
+    spidir_value_t arg = JIT_POP(type);
+
+    // call the helper
+    spidir_funcref_t ref;
+    RETHROW(jit_get_helper(ctx, helper, &ref));
+    spidir_value_t value = spidir_builder_build_call(builder, ref, 1, &arg);
+
+    // and push it back
+    JIT_PUSH(type, value);
+
+cleanup:
+    return err;
+}
+
 static wasm_err_t jit_wasm_binopi(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -1347,8 +1380,8 @@ static wasm_err_t jit_wasm_binopi(spidir_builder_handle_t builder, buffer_t* cod
     // figure the exact type
     spidir_value_type_t type;
     switch (opcode) {
-        case 0x67 ... 0x73: type = SPIDIR_TYPE_I32; opcode -= 0x67; break;
-        case 0x79 ... 0x85: type = SPIDIR_TYPE_I64; opcode -= 0x79; break;
+        case 0x6A ... 0x73: type = SPIDIR_TYPE_I32; opcode -= 0x6A; break;
+        case 0x7C ... 0x85: type = SPIDIR_TYPE_I64; opcode -= 0x7C; break;
         default: CHECK_FAIL();
     }
 
@@ -1359,15 +1392,12 @@ static wasm_err_t jit_wasm_binopi(spidir_builder_handle_t builder, buffer_t* cod
     // and now perform the action
     spidir_value_t value;
     switch (opcode) {
-        case 0: CHECK_FAIL("TODO: clz"); break;
-        case 1: CHECK_FAIL("TODO: ctz"); break;
-        case 2: CHECK_FAIL("TODO: popcnt"); break;
-        case 3: value = spidir_builder_build_iadd(builder, arg1, arg2); break;
-        case 4: value = spidir_builder_build_isub(builder, arg1, arg2); break;
-        case 5: value = spidir_builder_build_imul(builder, arg1, arg2); break;
-        case 6: value = spidir_builder_build_sdiv(builder, arg1, arg2); break;
-        case 7: value = spidir_builder_build_udiv(builder, arg1, arg2); break;
-        case 8: {
+        case 0: value = spidir_builder_build_iadd(builder, arg1, arg2); break;
+        case 1: value = spidir_builder_build_isub(builder, arg1, arg2); break;
+        case 2: value = spidir_builder_build_imul(builder, arg1, arg2); break;
+        case 3: value = spidir_builder_build_sdiv(builder, arg1, arg2); break;
+        case 4: value = spidir_builder_build_udiv(builder, arg1, arg2); break;
+        case 5: {
             // we are going to have `(arg1 & ((arg2 == -1) - 1)) % arg2`, that way if arg2 is -1, we will 
             // mask out the entire arg1 which always results in 1 as expected, meanwhile, if its not -1,
             // then it will turn into an ffs mask, which will not change anything letting it run normally, 
@@ -1379,10 +1409,10 @@ static wasm_err_t jit_wasm_binopi(spidir_builder_handle_t builder, buffer_t* cod
             arg1 = spidir_builder_build_and(builder, arg1, arg1_mask);
             value = spidir_builder_build_srem(builder, arg1, arg2); break;
         } break;
-        case 9: value = spidir_builder_build_urem(builder, arg1, arg2); break;
-        case 10: value = spidir_builder_build_and(builder, arg1, arg2); break;
-        case 11: value = spidir_builder_build_or(builder, arg1, arg2); break;
-        case 12: value = spidir_builder_build_xor(builder, arg1, arg2); break;
+        case 6: value = spidir_builder_build_urem(builder, arg1, arg2); break;
+        case 7: value = spidir_builder_build_and(builder, arg1, arg2); break;
+        case 8: value = spidir_builder_build_or(builder, arg1, arg2); break;
+        case 9: value = spidir_builder_build_xor(builder, arg1, arg2); break;
         default: CHECK_FAIL();
     }
 
@@ -1774,9 +1804,11 @@ wasm_err_t jit_wasm_opcode(spidir_builder_handle_t builder, buffer_t* code, jit_
         case 0x44: RETHROW(jit_wasm_f64_const(builder, code, ctx, func, label)); break;
         case 0x45 ... 0x5A: RETHROW(jit_wasm_cmpi(builder, code, ctx, func, label)); break;
         case 0x5B ... 0x66: RETHROW(jit_wasm_cmpf(builder, code, ctx, func, label)); break;
+        case 0x67 ... 0x69: RETHROW(jit_wasm_unaryopi(builder, code, ctx, func, label)); break;
         case 0x6A ... 0x73: RETHROW(jit_wasm_binopi(builder, code, ctx, func, label)); break;
         case 0x74 ... 0x78: RETHROW(jit_wasm_shift(builder, code, ctx, func, label)); break;
-        case 0x79 ... 0x85: RETHROW(jit_wasm_binopi(builder, code, ctx, func, label)); break;
+        case 0x79 ... 0x7B: RETHROW(jit_wasm_unaryopi(builder, code, ctx, func, label)); break;
+        case 0x7C ... 0x85: RETHROW(jit_wasm_binopi(builder, code, ctx, func, label)); break;
         case 0x86 ... 0x8A: RETHROW(jit_wasm_shift(builder, code, ctx, func, label)); break;
         case 0x92 ... 0x95: RETHROW(jit_wasm_binopf(builder, code, ctx, func, label)); break;
         case 0xA0 ... 0xA3: RETHROW(jit_wasm_binopf(builder, code, ctx, func, label)); break;
