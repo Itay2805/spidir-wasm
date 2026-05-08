@@ -564,38 +564,70 @@ cleanup:
 static wasm_err_t jit_prepare_state(jit_context_t* ctx, wasm_module_jit_t* jit) {
     wasm_err_t err = WASM_NO_ERROR;
 
-    ctx->globals = CALLOC(jit_global_t, ctx->module->globals_count);
-    CHECK(ctx->globals != nullptr);
-
     size_t offset = 0;
-    for (int i = 0; i < ctx->module->globals_count; i++) {
-        wasm_global_t* global = &ctx->module->globals[i];
-        spidir_value_type_t type = jit_get_spidir_value_type(global->value.kind);
-        ctx->globals[i].type = type;
-        if (global->mutable) {
-            // mutable, we need space for it
-            offset = ALIGN_UP(offset, jit_get_spidir_size(type));
-            ctx->globals[i].offset = offset;
-            offset += jit_get_spidir_size(type);
-        } else {
-            // immutable, not going to be allocated, mark it as such
-            ctx->globals[i].offset = -1;
+
+    //
+    // Layout globals
+    //
+
+    if (ctx->module->globals_count != 0) {
+        ctx->globals = CALLOC(jit_global_t, ctx->module->globals_count);
+        CHECK(ctx->globals != nullptr);
+        for (int64_t i = 0; i < ctx->module->globals_count; i++) {
+            wasm_global_t* global = &ctx->module->globals[i];
+            spidir_value_type_t type = jit_get_spidir_value_type(global->value.kind);
+            ctx->globals[i].type = type;
+            if (global->mutable) {
+                // mutable, we need space for it
+                offset = ALIGN_UP(offset, jit_get_spidir_size(type));
+                ctx->globals[i].offset = offset;
+                offset += jit_get_spidir_size(type);
+            } else {
+                // immutable, not going to be allocated, mark it as such
+                ctx->globals[i].offset = -1;
+            }
         }
     }
 
-    // tables: each one is a vector of funcref-sized slots
-    ctx->tables = CALLOC(jit_table_t, ctx->module->tables_count);
-    CHECK(ctx->module->tables_count == 0 || ctx->tables != nullptr);
+    //
+    // Layout tables
+    // TODO: move into the rodata instead
+    //
 
-    for (int i = 0; i < ctx->module->tables_count; i++) {
-        wasm_table_t* table = &ctx->module->tables[i];
-        offset = ALIGN_UP(offset, sizeof(void*));
-        ctx->tables[i].offset = offset;
-        ctx->tables[i].length = table->min;
+    if (ctx->module->tables_count != 0) {
+        ctx->tables = CALLOC(jit_table_t, ctx->module->tables_count);
+        CHECK(ctx->tables != nullptr);
+        for (int64_t i = 0; i < ctx->module->tables_count; i++) {
+            wasm_table_t* table = &ctx->module->tables[i];
+            offset = ALIGN_UP(offset, sizeof(void*));
+            ctx->tables[i].offset = offset;
+            ctx->tables[i].length = table->min;
 
-        size_t bytes;
-        CHECK(!__builtin_mul_overflow((size_t)table->min, sizeof(void*), &bytes));
-        CHECK(!__builtin_add_overflow(offset, bytes, &offset));
+            size_t bytes;
+            CHECK(!__builtin_mul_overflow((size_t)table->min, sizeof(void*), &bytes));
+            CHECK(!__builtin_add_overflow(offset, bytes, &offset));
+        }
+    }
+
+    //
+    // Layout passive data
+    //
+
+    if (ctx->module->data_count != 0) {
+        ctx->data = CALLOC(jit_data_t, ctx->module->data_count);
+        CHECK(ctx->data != nullptr);
+        for (int64_t i = 0; i < ctx->module->data_count; i++) {
+            wasm_data_t* data = &ctx->module->data[i];
+            if (!data->active) {
+                // passive segments get a single void* entry
+                offset = ALIGN_UP(offset, sizeof(void*));
+                ctx->data[i].offset = offset;
+                offset += sizeof(void*);
+            } else {
+                // active segments don't get an offset
+                ctx->data[i].offset = -1;
+            }
+        }
     }
 
     jit->state_size = offset;
@@ -614,7 +646,10 @@ static wasm_err_t jit_build_state_init(jit_context_t* ctx, wasm_module_jit_t* ji
     jit->state_init = wasm_host_calloc(1, jit->state_size);
     CHECK(jit->state_init != nullptr);
 
+    //
     // lay out the global values
+    //
+
     for (int64_t i = 0; i < ctx->module->globals_count; i++) {
         wasm_global_t* global = &ctx->module->globals[i];
         if (!global->mutable) continue;
@@ -630,7 +665,10 @@ static wasm_err_t jit_build_state_init(jit_context_t* ctx, wasm_module_jit_t* ji
         }
     }
 
+    //
     // lay out the table content
+    //
+
     for (int64_t i = 0; i < ctx->module->elems_count; i++) {
         wasm_elem_segment_t* elem = &ctx->module->elems[i];
         CHECK(elem->tableidx < ctx->module->tables_count);
@@ -645,6 +683,23 @@ static wasm_err_t jit_build_state_init(jit_context_t* ctx, wasm_module_jit_t* ji
         for (int64_t j = 0; j < elem->funcs_count; j++) {
             void** slots = jit->state_init + table->offset;
             RETHROW(jit_get_function_addr(elem->funcs[j], ctx, jit_code, code_map, &slots[elem->offset + j]));
+        }
+    }
+
+    //
+    // lay out data entries
+    //
+
+    for (int64_t i = 0; i < ctx->module->data_count; i++) {
+        wasm_data_t* data = &ctx->module->data[i];
+        if (!data->active) {
+            jit_data_t* jit_data = &ctx->data[i];
+
+            // TODO: make them be their own allocation maybe? how should memory management 
+            //       for these work? do we even really need it to be deallocated on 
+            //       data.drop?
+            void** data_ptr = jit->state_init + jit_data->offset;
+            *data_ptr = ctx->module->data[i].data;
         }
     }
 
@@ -701,6 +756,7 @@ cleanup:
     wasm_host_free(ctx.functions);
     wasm_host_free(ctx.globals);
     wasm_host_free(ctx.tables);
+    wasm_host_free(ctx.data);
     vec_free(&ctx.queue);
 
     return err;

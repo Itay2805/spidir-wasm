@@ -64,6 +64,12 @@ static wasm_type_t* wasm_get_func_type(jit_context_t* ctx, uint32_t funcidx) {
     return type;
 }
 
+static spidir_value_t jit_emit_zext64(spidir_builder_handle_t builder, spidir_value_t value) {
+    spidir_value_t e = spidir_builder_build_iext(builder, value);
+    spidir_value_t mask = spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, 0xFFFFFFFF);
+    return spidir_builder_build_and(builder, e, mask);    
+}
+
 //----------------------------------------------------------------------------------------------------------------------
 // Parametric Instructions
 //----------------------------------------------------------------------------------------------------------------------
@@ -495,10 +501,8 @@ static wasm_err_t jit_wasm_call_indirect(spidir_builder_handle_t builder, buffer
     // in-bounds path: compute &state_base[table.offset + idx*sizeof(void*)]
     spidir_builder_set_block(builder, ok_block);
     spidir_value_t state_base = spidir_builder_build_param_ref(builder, 1);
-    spidir_value_t idx64 = spidir_builder_build_iext(builder, idx);
-    idx64 = spidir_builder_build_and(builder, idx64,
-        spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, 0xFFFFFFFF));
-    spidir_value_t slot_byte_offset = spidir_builder_build_imul(builder, idx64,
+    spidir_value_t idx64 = jit_emit_zext64(builder, idx);
+    spidir_value_t slot_byte_offset = spidir_builder_build_imul(builder, idx64, 
         spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, sizeof(void*)));
     spidir_value_t total_offset = spidir_builder_build_iadd(builder, slot_byte_offset,
         spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, table->offset));
@@ -707,9 +711,7 @@ static wasm_err_t jit_wasm_calculate_addr(spidir_builder_handle_t builder, wasm_
     wasm_err_t err = WASM_NO_ERROR;
 
     // extend the offset to 64bit
-    offset = spidir_builder_build_iext(builder, offset);
-    offset = spidir_builder_build_and(builder, offset,
-        spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, 0xFFFFFFFF));
+    offset = jit_emit_zext64(builder, offset);
 
     // if we have an offset add it
     if (mem_arg->offset != 0) {
@@ -890,6 +892,71 @@ cleanup:
     return err;
 }
 
+static wasm_err_t jit_wasm_memory_init(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    // for now we don't have multi-memory support, so it is required to be at zero
+    uint32_t dataidx = BUFFER_PULL_U32(code);
+    CHECK(BUFFER_PULL(uint8_t, code) == 0);
+    JIT_TRACE("wasm: \tmemory.init %d", dataidx);
+
+    CHECK(dataidx < ctx->module->data_count);
+    CHECK(ctx->data[dataidx].offset != -1);
+
+    spidir_value_t n = JIT_POP(SPIDIR_TYPE_I32);
+    spidir_value_t src_offset = JIT_POP(SPIDIR_TYPE_I32);
+    spidir_value_t dst = JIT_POP(SPIDIR_TYPE_I32);
+
+    // load the data pointer from the state
+    spidir_value_t state_base = spidir_builder_build_param_ref(builder, 1);
+    spidir_value_t state_offset = spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, ctx->data[dataidx].offset);
+    spidir_value_t state_slot = spidir_builder_build_ptroff(builder, state_base, state_offset);
+    spidir_value_t data_ptr = spidir_builder_build_load(builder, SPIDIR_MEM_SIZE_8, SPIDIR_TYPE_PTR, state_slot);
+    
+    spidir_funcref_t helper;
+    RETHROW(jit_get_helper(ctx, JIT_HELPER_MEMORY_INIT, &helper));
+
+    // we are going to let the helper do the rest of the copy. data_len is
+    // a JIT-time constant from the module — the helper uses it for the
+    // (offset + length) bounds check so it can trap before reading data.
+    spidir_value_t mem_base = spidir_builder_build_param_ref(builder, 0);
+    spidir_value_t data_len = spidir_builder_build_iconst(builder, SPIDIR_TYPE_I32, ctx->module->data[dataidx].len);
+    spidir_value_t args[] = {
+        spidir_builder_build_ptroff(builder, mem_base, jit_emit_zext64(builder, dst)),
+        data_ptr,
+        data_len,
+        src_offset,
+        n
+    };
+    spidir_builder_build_call(builder, helper, ARRAY_LENGTH(args), args);
+    
+cleanup:
+    return err;
+}
+
+static wasm_err_t jit_wasm_data_drop(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    // for now we don't have multi-memory support, so it is required to be at zero
+    uint32_t dataidx = BUFFER_PULL_U32(code);
+    JIT_TRACE("wasm: \tdata.drop %d", dataidx);
+
+    CHECK(dataidx < ctx->module->data_count);
+    CHECK(ctx->data[dataidx].offset != -1);
+
+    // calculate the state slot
+    spidir_value_t state_base = spidir_builder_build_param_ref(builder, 1);
+    spidir_value_t state_offset = spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, ctx->data[dataidx].offset);
+    spidir_value_t state_slot = spidir_builder_build_ptroff(builder, state_base, state_offset);
+    
+    // store zero into it
+    spidir_value_t null = spidir_builder_build_iconst(builder, SPIDIR_TYPE_PTR, 0);
+    spidir_builder_build_store(builder, SPIDIR_MEM_SIZE_8, null, state_slot);
+
+cleanup:
+    return err;
+}
+
 static wasm_err_t jit_wasm_memory_copy(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -906,7 +973,11 @@ static wasm_err_t jit_wasm_memory_copy(spidir_builder_handle_t builder, buffer_t
     RETHROW(jit_get_helper(ctx, JIT_HELPER_MEMORY_COPY, &helper));
 
     spidir_value_t mem_base = spidir_builder_build_param_ref(builder, 0);
-    spidir_value_t args[] = { mem_base, dst, src, n };
+    spidir_value_t args[] = { 
+        spidir_builder_build_ptroff(builder, mem_base, jit_emit_zext64(builder, dst)), 
+        spidir_builder_build_ptroff(builder, mem_base, jit_emit_zext64(builder, src)), 
+        n
+    };
     spidir_builder_build_call(builder, helper, ARRAY_LENGTH(args), args);
     
 cleanup:
@@ -928,7 +999,11 @@ static wasm_err_t jit_wasm_memory_fill(spidir_builder_handle_t builder, buffer_t
     RETHROW(jit_get_helper(ctx, JIT_HELPER_MEMORY_FILL, &helper));
 
     spidir_value_t mem_base = spidir_builder_build_param_ref(builder, 0);
-    spidir_value_t args[] = { mem_base, dst, val, n };
+    spidir_value_t args[] = { 
+        spidir_builder_build_ptroff(builder, mem_base, jit_emit_zext64(builder, dst)), 
+        val, 
+        n 
+    };
     spidir_builder_build_call(builder, helper, ARRAY_LENGTH(args), args);
     
 cleanup:
@@ -940,6 +1015,8 @@ static wasm_err_t jit_wasm_bulk_memory_prefix(spidir_builder_handle_t builder, b
 
     uint32_t sub = BUFFER_PULL_U32(code);
     switch (sub) {
+        case 8: RETHROW(jit_wasm_memory_init(builder, code, ctx, func, label)); break;
+        case 9: RETHROW(jit_wasm_data_drop(builder, code, ctx, func, label)); break;
         case 10: RETHROW(jit_wasm_memory_copy(builder, code, ctx, func, label)); break;
         case 11: RETHROW(jit_wasm_memory_fill(builder, code, ctx, func, label)); break;
         default: CHECK_FAIL("Unsupported bulk-memory sub-opcode %x", sub);
@@ -1133,9 +1210,7 @@ static wasm_err_t jit_wasm_iconv(spidir_builder_handle_t builder, buffer_t* code
 
         case 0xAD: {
             spidir_value_t v = JIT_POP(SPIDIR_TYPE_I32);
-            spidir_value_t e = spidir_builder_build_iext(builder, v);
-            spidir_value_t mask = spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, 0xFFFFFFFF);
-            JIT_PUSH(SPIDIR_TYPE_I64, spidir_builder_build_and(builder, e, mask));
+            JIT_PUSH(SPIDIR_TYPE_I64, jit_emit_zext64(builder, v));
         } break;
 
         case 0xC0 ... 0xC4: {

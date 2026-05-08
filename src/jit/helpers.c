@@ -7,12 +7,31 @@
 #include <stdatomic.h>
 #include <stdint.h>
 
-static void jit_helper_memory_copy(void* mem_base, uint32_t d, uint32_t s, uint32_t n) {
-    memmove((char*)mem_base + d, (char*)mem_base + s, n);
+static void jit_helper_memory_copy(void* d, const void* s, uint32_t n) {
+    if (n != 0) {
+        memmove(d, s, n);
+    }
 }
 
-static void jit_helper_memory_fill(void* mem_base, uint32_t d, uint32_t val, uint32_t n) {
-    memset((char*)mem_base + d, (uint8_t)val, n);
+static void jit_helper_memory_fill(void* d, uint32_t val, uint32_t n) {
+    if (n != 0) {
+        memset(d, (uint8_t)val, n);
+    }
+}
+
+static void jit_helper_memory_init(void* dst, void* data, uint32_t data_len, uint32_t offset, uint32_t length) {
+    // ensure we don't copy over the data length
+    uint64_t top_offset = offset + length;
+    ASSERT(top_offset <= data_len);
+
+    if (length != 0) {
+        // the data will be null if the code used 
+        // data.drop on the data slot 
+        ASSERT(data != nullptr);
+
+        // copy it 
+        memcpy(dst, data + offset, length);
+    }
 }
 
 static uint32_t jit_helper_atomic_rmw_cmpxchg_1(_Atomic(uint8_t)* addr, uint32_t expected, uint32_t replacement) { uint8_t old = expected; atomic_compare_exchange_strong(addr, &old, replacement); return old; }
@@ -50,8 +69,9 @@ static const helper_def_t m_helper_defs[JIT_HELPER_COUNT] = {
     [JIT_HELPER_MEMORY_SIZE] = HELPER_FUNC(wasm_host_memory_size, I32, PTR),
     [JIT_HELPER_MEMORY_GROW] = HELPER_FUNC(wasm_host_memory_grow, I32, PTR, I32),
     
-    [JIT_HELPER_MEMORY_COPY] = HELPER_FUNC(jit_helper_memory_copy, NONE, PTR, I32, I32, I32),
-    [JIT_HELPER_MEMORY_FILL] = HELPER_FUNC(jit_helper_memory_fill, NONE, PTR, I32, I32, I32),
+    [JIT_HELPER_MEMORY_COPY] = HELPER_FUNC(jit_helper_memory_copy, NONE, PTR, PTR, I32),
+    [JIT_HELPER_MEMORY_FILL] = HELPER_FUNC(jit_helper_memory_fill, NONE, PTR, I32, I32),
+    [JIT_HELPER_MEMORY_INIT] = HELPER_FUNC(jit_helper_memory_init, NONE, PTR, PTR, I32, I32, I32),
 
     [JIT_HELPER_TRAP] = HELPER_FUNC(jit_helper_trap, NONE),
 
