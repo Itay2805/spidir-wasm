@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <getopt.h>
 #include <stdarg.h>
@@ -342,11 +343,11 @@ int main(int argc, char** argv) {
 
     // from that mapped the first x bytes (skip when the module declares no
     // memory — modules that never touch memory never read this region)
-    if (m_module.memory_min != 0) {
-        m_memory_size = m_module.memory_min;
+    if (m_module.memory.min != 0) {
+        m_memory_size = m_module.memory.min;
         void* mapped = mmap(
             m_memory_base,
-            m_module.memory_min,
+            m_module.memory.min,
             PROT_READ | PROT_WRITE,
             MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
             -1,
@@ -371,9 +372,17 @@ int main(int argc, char** argv) {
         }
     }
 
+    // use the start func if exists, otherwise search
+    // for an _start implicitly
+    int64_t index;
+    if (m_module.start_func >= 0) {
+        index = m_module.start_func;
+    } else {
+        index = wasm_find_export(&m_module, "_start");
+        CHECK(index >= 0);
+    }
+
     // get the entry point and run it
-    int64_t index = wasm_find_export(&m_module, "_start");
-    CHECK(index >= 0);
     int (*entry)(void* memory, void* state) = m_module_jit.exports[index].func.address;
     status = entry(m_memory_base, state_base);
 
@@ -448,12 +457,16 @@ int32_t wasm_host_memory_size(void* memory_base) {
 int32_t wasm_host_memory_grow(void* memory_base, int32_t new_page_count) {
     if (new_page_count < 0) return -1;
 
+    if (m_module.memory.shared) {
+        // TODO: take lock
+    }
+
     // Spec: refuse if growth would exceed the declared max. The size
     // increase happens only along the way to a successful mmap, so the
     // -1 return path leaves m_memory_size untouched.
     size_t old_count = m_memory_size / WASM_PAGE_SIZE;
     size_t new_count = old_count + (size_t)new_page_count;
-    if (new_count * WASM_PAGE_SIZE > m_module.memory_max) return -1;
+    if (new_count * WASM_PAGE_SIZE > m_module.memory.max) return -1;
 
     // Map only the newly-added range. The original pages are already
     // mapped (since startup); using MAP_FIXED over them would zap any
@@ -467,10 +480,23 @@ int32_t wasm_host_memory_grow(void* memory_base, int32_t new_page_count) {
             -1,
             0
         );
-        if (added == MAP_FAILED) return -1;
+        if (added == MAP_FAILED) {
+            
+            if (m_module.memory.shared) {
+                // TODO: unlock
+            }
+
+            return -1;
+        }
     }
 
     m_memory_size = new_count * WASM_PAGE_SIZE;
+
+    if (m_module.memory.shared) {
+        // TODO: unlock
+        // TODO: seq-cst fence as per spec
+    }
+
     return (int32_t)old_count;
 }
 

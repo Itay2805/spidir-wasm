@@ -91,6 +91,12 @@ typedef struct wasm_code {
 
 typedef uint32_t typeidx_t;
 
+typedef struct wasm_memory {
+    uint64_t min;
+    uint64_t max;
+    bool shared;
+} wasm_memory_t;
+
 typedef struct wasm_module {
     wasm_type_t* types;
     typeidx_t* functions;
@@ -104,8 +110,8 @@ typedef struct wasm_module {
     // same amount as functions count
     wasm_code_t* code;
 
-    uint64_t memory_min;
-    uint64_t memory_max;
+    // right now only one memory is supported
+    wasm_memory_t memory;
 
     uint32_t types_count;
     uint32_t functions_count;
@@ -115,6 +121,10 @@ typedef struct wasm_module {
     uint32_t tables_count;
     uint32_t elems_count;
     uint32_t data_segments_count;
+
+    // the starting function, 
+    // -1 if no such function
+    int64_t start_func;
 
     // Optional debug names from the wasm `name` custom section. NULL if the
     // section is absent or doesn't carry a value for the corresponding entry.

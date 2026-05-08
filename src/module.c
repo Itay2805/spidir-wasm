@@ -287,27 +287,34 @@ static wasm_err_t wasm_parse_memory_section(wasm_module_t* module, buffer_t* buf
     // TODO: multi-memory support
     // TODO: support for 64bit addresses
 
+    wasm_memory_t* memory = &module->memory;
     uint8_t limit_type = BUFFER_PULL(uint8_t, buffer);
     if (limit_type == 0x00) {
-        module->memory_min = BUFFER_PULL_U64(buffer);
-        module->memory_max = (UINT32_MAX / WASM_PAGE_SIZE) - 1;
+        memory->min = BUFFER_PULL_U64(buffer);
+        memory->max = (UINT32_MAX / WASM_PAGE_SIZE) - 1;
+        memory->shared = false;
     } else if (limit_type == 0x01) {
-        module->memory_min = BUFFER_PULL_U64(buffer);
-        module->memory_max = BUFFER_PULL_U64(buffer);
+        memory->min = BUFFER_PULL_U64(buffer);
+        memory->max = BUFFER_PULL_U64(buffer);
+        memory->shared = false;
+    } else if (limit_type == 0x03) {
+        memory->min = BUFFER_PULL_U64(buffer);
+        memory->max = BUFFER_PULL_U64(buffer);
+        memory->shared = true;
     } else {
         CHECK_FAIL("Invalid memory limit %02x", limit_type);
     }
 
     // ensure the min is less or equals to the max
-    CHECK(module->memory_min <= module->memory_max);
+    CHECK(memory->min <= memory->max);
 
     // turn into bytes instead of pages
-    CHECK(!__builtin_mul_overflow(module->memory_min, WASM_PAGE_SIZE, &module->memory_min));
-    CHECK(!__builtin_mul_overflow(module->memory_max, WASM_PAGE_SIZE, &module->memory_max));
+    CHECK(!__builtin_mul_overflow(memory->min, WASM_PAGE_SIZE, &memory->min));
+    CHECK(!__builtin_mul_overflow(memory->max, WASM_PAGE_SIZE, &memory->max));
 
     // ensure both stay within 4GB
-    CHECK(module->memory_min < SIZE_4GB);
-    CHECK(module->memory_max < SIZE_4GB);
+    CHECK(memory->min < SIZE_4GB);
+    CHECK(memory->max < SIZE_4GB);
 
     CHECK(buffer->len == 0);
 
@@ -562,6 +569,17 @@ cleanup:
     return err;
 }
 
+
+static wasm_err_t wasm_parse_start_section(wasm_module_t* module, buffer_t* buffer) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    module->start_func = BUFFER_PULL_U32(buffer);
+    CHECK(buffer->len == 0);
+
+cleanup:
+    return err;
+}
+
 static wasm_err_t wasm_parse_code_section(wasm_module_t* module, buffer_t* buffer) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -688,6 +706,10 @@ cleanup:
 wasm_err_t wasm_load_module(wasm_module_t* module, void* data, size_t size) {
     wasm_err_t err = WASM_NO_ERROR;
 
+    // setup the defaults
+    memset(module, 0, sizeof(*module));
+    module->start_func = -1;
+
     buffer_t buffer = init_buffer(data, size);
     RETHROW(module_pull_magic_version(&buffer));
 
@@ -725,12 +747,13 @@ wasm_err_t wasm_load_module(wasm_module_t* module, void* data, size_t size) {
             case WASM_SECTION_MEMORY: RETHROW(wasm_parse_memory_section(module, contents)); break;
             case WASM_SECTION_GLOBAL: RETHROW(wasm_parse_global_section(module, contents)); break;
             case WASM_SECTION_EXPORT: RETHROW(wasm_parse_export_section(module, contents)); break;
+            case WASM_SECTION_START: RETHROW(wasm_parse_start_section(module, contents)); break;
             case WASM_SECTION_ELEMENT: RETHROW(wasm_parse_element_section(module, contents)); break;
             case WASM_SECTION_CODE: RETHROW(wasm_parse_code_section(module, contents)); break;
             case WASM_SECTION_DATA: RETHROW(wasm_parse_data_section(module, contents)); break;
 
             default: {
-                CHECK_FAIL("wasm: ignoring section %d", section.id);
+                CHECK_FAIL("wasm: unknown section %d", section.id);
             } break;
         }
     }
