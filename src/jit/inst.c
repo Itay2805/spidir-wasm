@@ -1361,6 +1361,69 @@ cleanup:
 // Atomic Instructions
 //----------------------------------------------------------------------------------------------------------------------
 
+static wasm_err_t jit_wasm_atomic_notify(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    // get the memory argument
+    wasm_mem_arg_t mem_arg = {};
+    RETHROW(jit_pull_memarg(code, &mem_arg));
+
+    spidir_value_t count = JIT_POP(SPIDIR_TYPE_I32);
+    spidir_value_t offset = JIT_POP(SPIDIR_TYPE_I32);
+
+    // calculate the address
+    spidir_value_t addr = SPIDIR_VALUE_INVALID;
+    RETHROW(jit_wasm_calculate_addr(builder, &mem_arg, offset, &addr));
+
+    // get the helper
+    spidir_funcref_t helper;
+    RETHROW(jit_get_helper(ctx, JIT_HELPER_ATOMIC_NOTIFY, &helper));
+    spidir_value_t args[] = { addr, count };
+    spidir_value_t value = spidir_builder_build_call(builder, helper, ARRAY_LENGTH(args), args);
+    JIT_PUSH(SPIDIR_TYPE_I32, value);
+
+cleanup:
+    return err;
+}
+
+static wasm_err_t jit_wasm_atomic_wait(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint8_t sub_opcode = ((uint8_t*)code->data)[-1];
+
+    // get the memory argument
+    wasm_mem_arg_t mem_arg = {};
+    RETHROW(jit_pull_memarg(code, &mem_arg));
+
+    // the size of the waiter
+    spidir_value_type_t type;
+    jit_helper_kind_t kind;
+    switch (sub_opcode) {
+        case 0x01: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_WAIT_4; break;
+        case 0x02: type = SPIDIR_TYPE_I64; kind = JIT_HELPER_ATOMIC_WAIT_8; break;
+        default: CHECK_FAIL();
+    }
+
+    // the arguments
+    spidir_value_t timeout = JIT_POP(SPIDIR_TYPE_I64);
+    spidir_value_t expected = JIT_POP(type);
+    spidir_value_t offset = JIT_POP(SPIDIR_TYPE_I32);
+
+    // calculate the address
+    spidir_value_t addr = SPIDIR_VALUE_INVALID;
+    RETHROW(jit_wasm_calculate_addr(builder, &mem_arg, offset, &addr));
+
+    // get the helper
+    spidir_funcref_t helper;
+    RETHROW(jit_get_helper(ctx, kind, &helper));
+    spidir_value_t args[] = { addr, expected, timeout };
+    spidir_value_t value = spidir_builder_build_call(builder, helper, ARRAY_LENGTH(args), args);
+    JIT_PUSH(SPIDIR_TYPE_I32, value);
+
+cleanup:
+    return err;
+}
+
 static wasm_err_t jit_wasm_atomic_store(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -1392,8 +1455,6 @@ static wasm_err_t jit_wasm_atomic_store(spidir_builder_handle_t builder, buffer_
     // get the helper
     spidir_funcref_t helper;
     RETHROW(jit_get_helper(ctx, kind, &helper));
-
-    // and call it 
     spidir_value_t args[] = { addr, value };
     spidir_builder_build_call(builder, helper, ARRAY_LENGTH(args), args);
 
@@ -1485,14 +1546,84 @@ cleanup:
     return err;
 }
 
+static wasm_err_t jit_wasm_atomic_rmw_binop(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint8_t sub_opcode = ((uint8_t*)code->data)[-1];
+
+    // get the memory argument
+    wasm_mem_arg_t mem_arg = {};
+    RETHROW(jit_pull_memarg(code, &mem_arg));
+
+    // figure the operand size
+    spidir_value_type_t type;
+    jit_helper_kind_t kind;
+    switch (sub_opcode) {
+        case 0x1E: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_RMW_ADD_4; break;
+        case 0x1F: type = SPIDIR_TYPE_I64; kind = JIT_HELPER_ATOMIC_RMW_ADD_8; break;
+        case 0x20: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_RMW_ADD_1; break;
+        case 0x21: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_RMW_ADD_2; break;
+
+        case 0x25: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_RMW_SUB_4; break;
+        case 0x26: type = SPIDIR_TYPE_I64; kind = JIT_HELPER_ATOMIC_RMW_SUB_8; break;
+        case 0x27: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_RMW_SUB_1; break;
+        case 0x28: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_RMW_SUB_2; break;
+
+        case 0x2C: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_RMW_AND_4; break;
+        case 0x2D: type = SPIDIR_TYPE_I64; kind = JIT_HELPER_ATOMIC_RMW_AND_8; break;
+        case 0x2E: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_RMW_AND_1; break;
+        case 0x2F: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_RMW_AND_2; break;
+
+        case 0x33: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_RMW_OR_4; break;
+        case 0x34: type = SPIDIR_TYPE_I64; kind = JIT_HELPER_ATOMIC_RMW_OR_8; break;
+        case 0x35: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_RMW_OR_1; break;
+        case 0x36: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_RMW_OR_2; break;
+
+        case 0x3A: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_RMW_XOR_4; break;
+        case 0x3B: type = SPIDIR_TYPE_I64; kind = JIT_HELPER_ATOMIC_RMW_XOR_8; break;
+        case 0x3C: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_RMW_XOR_1; break;
+        case 0x3D: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_RMW_XOR_2; break;
+
+        case 0x41: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_RMW_XCHG_4; break;
+        case 0x42: type = SPIDIR_TYPE_I64; kind = JIT_HELPER_ATOMIC_RMW_XCHG_8; break;
+        case 0x43: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_RMW_XCHG_1; break;
+        case 0x44: type = SPIDIR_TYPE_I32; kind = JIT_HELPER_ATOMIC_RMW_XCHG_2; break;
+
+        default: CHECK_FAIL();
+    }
+
+    // get the values
+    spidir_value_t arg2 = JIT_POP(type);
+    spidir_value_t offset = JIT_POP(SPIDIR_TYPE_I32);
+
+    // calculate the address
+    spidir_value_t addr = SPIDIR_VALUE_INVALID;
+    RETHROW(jit_wasm_calculate_addr(builder, &mem_arg, offset, &addr));
+
+    // get the helper
+    spidir_funcref_t helper;
+    RETHROW(jit_get_helper(ctx, kind, &helper));
+
+    // and call it 
+    spidir_value_t args[] = { addr, arg2 };
+    spidir_value_t value = spidir_builder_build_call(builder, helper, ARRAY_LENGTH(args), args);
+    JIT_PUSH(type, value);
+
+cleanup:
+    return err;
+}
+
 static wasm_err_t jit_wasm_atomic_prefix(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
     uint32_t sub = BUFFER_PULL_U32(code);
     switch (sub) {
-        case 0x10 ... 0x13: RETHROW(jit_wasm_atomic_load(builder, code, ctx, func, label)); break;
-        case 0x17 ... 0x1A: RETHROW(jit_wasm_atomic_store(builder, code, ctx, func, label)); break;
-        case 0x48 ... 0x4B: RETHROW(jit_wasm_atomic_rmw_cmpexchg(builder, code, ctx, func, label)); break;
+        case 0x00: RETHROW(jit_wasm_atomic_notify(builder, code, ctx, func, label)); break;
+        case 0x01 ... 0x02: RETHROW(jit_wasm_atomic_wait(builder, code, ctx, func, label)); break;
+        case 0x10 ... 0x16: RETHROW(jit_wasm_atomic_load(builder, code, ctx, func, label)); break;
+        case 0x17 ... 0x1D: RETHROW(jit_wasm_atomic_store(builder, code, ctx, func, label)); break;
+        case 0x1E ... 0x47: RETHROW(jit_wasm_atomic_rmw_binop(builder, code, ctx, func, label)); break;
+        case 0x48 ... 0x4E: RETHROW(jit_wasm_atomic_rmw_cmpexchg(builder, code, ctx, func, label)); break;
         default: CHECK_FAIL("Unsupported atomic sub-opcode %x", sub);
     }
 

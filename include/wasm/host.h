@@ -57,3 +57,21 @@ int32_t wasm_host_memory_grow(void* memory_base, int32_t new_page_count);
 void* wasm_host_jit_alloc(size_t rx_page_count, size_t ro_page_count);
 bool wasm_host_jit_lock(void* ptr, size_t rx_page_count, size_t ro_page_count);
 void wasm_host_jit_free(void* ptr, size_t rx_page_count, size_t ro_page_count);
+
+/**
+ * Wakeup waiters on the given pointer, up to `count` waiters. Return the amount of waiters
+ * actually woken up.
+ */
+uint32_t wasm_host_atomic_notify(void* ptr, uint32_t count);
+
+/**
+ * wait on the given address, the possible return values are:
+ * 0 - "ok", woken by another agent in the cluster
+ * 1 - "not-equal", the loaded value did not match the expected value
+ * 2 - "timed-out", not woken before timeout expired
+ *
+ * The timeout is in relative nanoseconds, and if its a negative 
+ * number it should not have any timeout
+ */
+uint32_t wasm_host_atomic_wait_4(_Atomic(uint32_t)* value, uint32_t expected, int64_t timeout);
+uint32_t wasm_host_atomic_wait_8(_Atomic(uint64_t)* value, uint64_t expected, int64_t timeout);

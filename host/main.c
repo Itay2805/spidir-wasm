@@ -1,4 +1,6 @@
 #include <errno.h>
+#include <linux/futex.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <getopt.h>
@@ -6,6 +8,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
+#include <time.h>
+#include <unistd.h>
 
 #include <wasm/wasm.h>
 #include <wasm/jit.h>
@@ -531,3 +536,57 @@ bool wasm_host_jit_lock(void* ptr, size_t rx_page_count, size_t ro_page_count) {
 void wasm_host_jit_free(void* ptr, size_t rx_page_count, size_t ro_page_count) {
     munmap(ptr, (rx_page_count + ro_page_count) * 4096);
 }
+
+// --- Atomic wait/notify (futex) ------------------------------------------
+// memory.atomic.wait{32,64} and memory.atomic.notify map directly onto
+// Linux futexes: the kernel atomically does the value compare and parks on
+// mismatch, so there's no lost-wakeup race to defend against in userspace.
+// Linux futexes are 32-bit, so wait_8 hashes onto the *first 4 bytes* at
+// the same address (whatever the host stores there — endian-independent
+// since futex and our `expected_first4` read the same 4 bytes). notify
+// uses FUTEX_WAKE on the address, which wakes both 4- and 8-byte waiters
+// uniformly because they hash on the same kernel queue.
+//
+// FUTEX_WAIT_BITSET (rather than FUTEX_WAIT) so the timeout is absolute
+// against CLOCK_MONOTONIC — that lets EINTR retries re-issue without
+// accumulating drift.
+
+static void futex_deadline(int64_t timeout_ns, struct timespec* out) {
+    clock_gettime(CLOCK_MONOTONIC, out);
+    out->tv_sec += timeout_ns / 1000000000;
+    long ns = out->tv_nsec + timeout_ns % 1000000000;
+    if (ns >= 1000000000) {
+        out->tv_sec += 1;
+        ns -= 1000000000;
+    }
+    out->tv_nsec = ns;
+}
+
+uint32_t wasm_host_atomic_notify(void* ptr, uint32_t count) {
+    if (count == 0) return 0;
+    if (count > INT32_MAX) count = INT32_MAX;
+    long rc = syscall(SYS_futex, ptr, FUTEX_WAKE_PRIVATE, count, nullptr, nullptr, 0);
+    return rc < 0 ? 0 : (uint32_t)rc;
+}
+
+uint32_t wasm_host_atomic_wait_4(_Atomic(uint32_t)* value, uint32_t expected, int64_t timeout) {
+    struct timespec deadline;
+    struct timespec* dp = nullptr;
+    if (timeout >= 0) {
+        futex_deadline(timeout, &deadline);
+        dp = &deadline;
+    }
+    for (;;) {
+        long rc = syscall(SYS_futex, value, FUTEX_WAIT_BITSET_PRIVATE,
+                          expected, dp, nullptr, FUTEX_BITSET_MATCH_ANY);
+        if (rc == 0) return 0;
+        if (errno == EAGAIN) return 1;
+        if (errno == ETIMEDOUT) return 2;
+        // EINTR: the deadline is absolute, so just re-issue.
+    }
+}
+
+uint32_t wasm_host_atomic_wait_8(_Atomic(uint64_t)* value, uint64_t expected, int64_t timeout) {
+    ASSERT(!"TODO: this");
+}
+
