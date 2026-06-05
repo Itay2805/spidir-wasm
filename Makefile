@@ -13,7 +13,7 @@ override MAKEFLAGS += -rR
 CFLAGS 			?=
 
 # Build the host tool
-HOST 			?= n
+HOST 			?= y
 
 # Build with LLVM source-coverage instrumentation. Set indirectly via
 # `make coverage`; not intended for direct use.

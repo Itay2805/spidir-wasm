@@ -102,6 +102,11 @@ cases-c-src := $(wildcard cases/*.c)
 bins-y += $(notdir $(basename $(cases-c-src)))
 $(foreach src,$(cases-c-src),$(eval $(basename $(notdir $(src)))-y += $(src)))
 
+# pthreads needs real linear-memory headroom: the wasi-sdk default leaves max
+# == min == a couple of pages, with no room for the per-thread stacks, so
+# thread creation fails outright. Pin a fixed 16 MiB.
+ldflags-pthreads-y += -Wl,--initial-memory=16777216
+
 include ../scripts/build.mk
 
 # Ensure sysroot + compiler-rt builtins are staged before any C-built bin
