@@ -530,7 +530,9 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
 
     // save the entry function
     if (ctx->module->start_func >= 0) {
-        RETHROW(jit_get_function_addr(ctx->module->start_func, ctx, jit_code, &code_map, &jit->start_func));
+        void* entry = nullptr;
+        RETHROW(jit_get_function_addr(ctx->module->start_func, ctx, jit_code, &code_map, &entry));
+        jit->start_func = entry;
     }
 
     // we are finished with jitting, we can lock the region and

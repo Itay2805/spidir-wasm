@@ -120,7 +120,12 @@ static wasm_err_t make_func_label(
     {
         char* buf = wasm_host_calloc(1, 32);
         CHECK(buf != nullptr);
-        wasm_host_snprintf(buf, 32, "func%u", funcidx);
+        buf[0] = 'f';
+        buf[1] = 'u';
+        buf[2] = 'n';
+        buf[3] = 'c';
+        int digits = u64toa(funcidx, &buf[4]);
+        buf[4 + digits] = '\0';
         *out = buf;
     }
 

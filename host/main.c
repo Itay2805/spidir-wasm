@@ -365,19 +365,17 @@ int main(int argc, char** argv) {
     // setup the memory of the new module
     wasm_module_init_memory(&m_module, m_memory_base);
 
-    // use the start func if exists, otherwise search
-    // for an _start implicitly
-    int64_t index;
-    int (*entry)(void* memory, void* state) = nullptr;
+    // start with running the start section, it should always run no matter what
     if (m_module.start_func >= 0) {
-        entry = m_module_jit.start_func;
-    } else {
-        index = wasm_find_export(&m_module, "_start");
-        CHECK(index >= 0);
-        entry = m_module_jit.exports[index].func.address;
+        m_module_jit.start_func(m_memory_base, state_base);
     }
+    
+    // find the real entry point
+    uint64_t index = wasm_find_export(&m_module, "_start");
+    CHECK(index >= 0);
+    int (*entry)(void* memory, void* state) = m_module_jit.exports[index].func.address;
 
-    // get the entry point and run it
+    // and run it
     status = entry(m_memory_base, state_base);
 
 cleanup:
@@ -437,12 +435,9 @@ void wasm_host_log(wasm_host_log_level_t log_level, const char* fmt, ...) {
     va_end(args);
 }
 
-void wasm_host_snprintf(char* buffer, size_t len, const char* fmt, ...) {
-    va_list args = {};
-    va_start(args, fmt);
-    vsnprintf(buffer, len, fmt, args);
-    va_end(args);
-}
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Host memory instance handling
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 int32_t wasm_host_memory_size(void* memory_base) {
     return m_memory_size / WASM_PAGE_SIZE;
@@ -494,6 +489,10 @@ int32_t wasm_host_memory_grow(void* memory_base, int32_t new_page_count) {
     return (int32_t)old_count;
 }
 
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Host allocator functions
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 void* wasm_host_calloc(size_t nmemb, size_t size) {
     return calloc(nmemb, size);
 }
@@ -537,19 +536,9 @@ void wasm_host_jit_free(void* ptr, size_t rx_page_count, size_t ro_page_count) {
     munmap(ptr, (rx_page_count + ro_page_count) * 4096);
 }
 
-// --- Atomic wait/notify (futex) ------------------------------------------
-// memory.atomic.wait{32,64} and memory.atomic.notify map directly onto
-// Linux futexes: the kernel atomically does the value compare and parks on
-// mismatch, so there's no lost-wakeup race to defend against in userspace.
-// Linux futexes are 32-bit, so wait_8 hashes onto the *first 4 bytes* at
-// the same address (whatever the host stores there — endian-independent
-// since futex and our `expected_first4` read the same 4 bytes). notify
-// uses FUTEX_WAKE on the address, which wakes both 4- and 8-byte waiters
-// uniformly because they hash on the same kernel queue.
-//
-// FUTEX_WAIT_BITSET (rather than FUTEX_WAIT) so the timeout is absolute
-// against CLOCK_MONOTONIC — that lets EINTR retries re-issue without
-// accumulating drift.
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Host atomic notify/wait implementation
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 static void futex_deadline(int64_t timeout_ns, struct timespec* out) {
     clock_gettime(CLOCK_MONOTONIC, out);
@@ -577,8 +566,7 @@ uint32_t wasm_host_atomic_wait_4(_Atomic(uint32_t)* value, uint32_t expected, in
         dp = &deadline;
     }
     for (;;) {
-        long rc = syscall(SYS_futex, value, FUTEX_WAIT_BITSET_PRIVATE,
-                          expected, dp, nullptr, FUTEX_BITSET_MATCH_ANY);
+        long rc = syscall(SYS_futex, value, FUTEX_WAIT_BITSET_PRIVATE, expected, dp, nullptr, FUTEX_BITSET_MATCH_ANY);
         if (rc == 0) return 0;
         if (errno == EAGAIN) return 1;
         if (errno == ETIMEDOUT) return 2;

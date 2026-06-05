@@ -22,8 +22,6 @@ void wasm_host_log(wasm_host_log_level_t log_level, const char* fmt, ...);
  */
 size_t wasm_host_page_size(void);
 
-void wasm_host_snprintf(char* buffer, size_t len, const char* fmt, ...);
-
 void* wasm_host_calloc(size_t nmemb, size_t size);
 void* wasm_host_realloc(void* ptr, size_t new_size);
 void wasm_host_free(void* ptr);

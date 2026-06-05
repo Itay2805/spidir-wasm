@@ -144,7 +144,7 @@ typedef struct wasm_module_jit {
     wasm_jit_debug_info_t debug;
 
     // the jitted start function
-    void* start_func;
+    void (*start_func)(void* memory_base, void* state_base);
 } wasm_module_jit_t;
 
 wasm_err_t wasm_module_jit(wasm_module_t* module, wasm_module_jit_t* jitted_module, wasm_jit_config_t* config);

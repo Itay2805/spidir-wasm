@@ -65,7 +65,12 @@ wasm_err_t jit_prepare_function(jit_context_t* ctx, uint32_t funcidx) {
     // fallback to auto-generated name
     char name[64];
     if (debug_name == nullptr) {
-        wasm_host_snprintf(name, sizeof(name), "func%d", funcidx);
+        name[0] = 'f';
+        name[1] = 'u';
+        name[2] = 'n';
+        name[3] = 'c';
+        int digits = u64toa(funcidx, &name[4]);
+        name[4 + digits] = '\0';
         debug_name = name;
     }
 

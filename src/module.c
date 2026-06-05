@@ -602,6 +602,23 @@ static wasm_err_t wasm_parse_start_section(wasm_module_t* module, buffer_t* buff
     module->start_func = BUFFER_PULL_U32(buffer);
     CHECK(buffer->len == 0);
 
+    // must be smaller than the functions 
+    CHECK(module->start_func < module->imports_count + module->functions_count);
+
+    // get the type index of the start function
+    typeidx_t idx;
+    if (module->start_func < module->imports_count) {
+        wasm_import_t* import = &module->imports[module->start_func];
+        CHECK(import->kind == WASM_EXTERN_FUNC);
+        idx = import->index;
+    } else {
+        idx = module->functions[module->start_func - module->imports_count];
+    }
+
+    // check it has an empty signature
+    CHECK(module->types[idx].arg_types_count == 0);
+    CHECK(module->types[idx].result_types_count == 0);
+
 cleanup:
     return err;
 }

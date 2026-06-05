@@ -6,6 +6,7 @@ libwasm-y += src/jit/inst.c
 libwasm-y += src/jit/jit.c
 libwasm-y += src/jit/debug_elf.c
 libwasm-y += src/util/hmap.c
+libwasm-y += src/util/string.c
 libwasm-y += src/util/vec.c
 libwasm-y += src/buffer.c
 libwasm-y += src/module.c
