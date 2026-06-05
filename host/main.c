@@ -295,7 +295,6 @@ int main(int argc, char** argv) {
             } break;
 
             case OPTION_SPIDIR_DUMP: {
-                TRACE("%s", optarg);
                 if (optarg == nullptr) {
                     config.dump_callback = spidir_dump_callback;
                     config.dump_arg = stdout;

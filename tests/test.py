@@ -50,7 +50,12 @@ def run_test(main_bin: Path, wasm: Path) -> tuple[bool, float, str, str, str | N
     """Run one test and return (ok, elapsed, stdout, stderr, reason_if_failed)."""
     start = time.monotonic()
     proc = subprocess.run(
-        [str(main_bin), "-m", str(wasm), '--emit-debug-elf', str(wasm) + '.elf'],
+        [
+            str(main_bin), 
+            "-m", str(wasm), 
+            '--emit-debug-elf', str(wasm) + '.elf',
+            f'--spidir-dump={wasm}.spidir',
+        ],
         capture_output=True,
         text=True,
     )
