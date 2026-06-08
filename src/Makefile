@@ -1,10 +1,11 @@
 libs-y += libwasm
 
+libwasm-y += src/jit/debug_elf.c
 libwasm-y += src/jit/function.c
 libwasm-y += src/jit/helpers.c
 libwasm-y += src/jit/inst.c
 libwasm-y += src/jit/jit.c
-libwasm-y += src/jit/debug_elf.c
+libwasm-y += src/jit/libcall.c
 libwasm-y += src/util/hmap.c
 libwasm-y += src/util/string.c
 libwasm-y += src/util/vec.c

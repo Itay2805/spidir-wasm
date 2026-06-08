@@ -70,33 +70,39 @@ typedef struct wasm_jit_func_layout {
 // hold the final value; we keep the per-reloc record around so the ELF can
 // re-express absolute references symbolically (so GDB / a disassembler will
 // label `mov rax, &func` rather than just printing the literal).
-typedef enum wasm_jit_reloc_kind {
-    WASM_JIT_RELOC_X64_PC32,
-    WASM_JIT_RELOC_X64_ABS64,
-} wasm_jit_reloc_kind_t;
-
-typedef enum wasm_jit_reloc_target_kind {
-    // The relocation points at a wasm-level function (internal or import).
-    // `target_funcidx` is its wasm funcidx; `target_address` is the runtime
-    // address (the function entry — endbr64 not included).
-    WASM_JIT_RELOC_TARGET_FUNC,
-
-    // The relocation points at the function's own constant pool. The pool's
-    // runtime address is in `target_address`.
-    WASM_JIT_RELOC_TARGET_CONSTPOOL,
-
-    // The relocation points at a runtime helper or anything else we didn't
-    // round-trip through a wasm-level symbol. `target_address` is the raw
-    // host address; the ELF emitter synthesises an absolute symbol for it.
-    WASM_JIT_RELOC_TARGET_EXTERNAL,
-} wasm_jit_reloc_target_kind_t;
-
+//
+// The relocation kind and target classification are spidir's own types rather
+// than a parallel wasm enum: spidir already names exactly the cases we care
+// about, and mirroring it directly means new backend reloc kinds / libcalls
+// flow through to the debug ELF without a translation table to keep in sync.
 typedef struct wasm_jit_reloc {
+    // Site of the relocation in the live JIT binary, plus the linked addend.
     void* address;
     int64_t addend;
-    wasm_jit_reloc_kind_t kind;
-    wasm_jit_reloc_target_kind_t target_kind;
+
+    // Relocation kind (SPIDIR_RELOC_X64_PC32 / SPIDIR_RELOC_X64_ABS64).
+    spidir_reloc_kind_t kind;
+
+    // What the relocation points at, straight from spidir's classification:
+    //   INTERNAL_FUNCTION → a module-local wasm function (target_funcidx set)
+    //   EXTERNAL_FUNCTION → a wasm import (target_funcidx set) or a JIT
+    //                       runtime helper (target_funcidx == UINT32_MAX)
+    //   LIBCALL           → a spidir backend libcall (target_libcall set)
+    //   CONSTPOOL         → the owning function's constant pool
+    spidir_reloc_target_kind_t target_kind;
+
+    // wasm funcidx of the target when it round-trips to a wasm-level function
+    // (INTERNAL_FUNCTION always; EXTERNAL_FUNCTION when it's an import).
+    // UINT32_MAX when the target has no wasm symbol (helper / libcall /
+    // constpool). `target_address` is the runtime address (function entry,
+    // endbr64 not included).
     uint32_t target_funcidx;
+
+    // The spidir libcall kind, valid only when target_kind == LIBCALL. Lets
+    // the debug ELF name the symbol it synthesizes for the libcall.
+    spidir_libcall_kind_t target_libcall;
+
+    // Resolved runtime address of the target.
     void* target_address;
 
     // Owning function (the function whose code carries this relocation). We

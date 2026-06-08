@@ -1344,26 +1344,33 @@ static wasm_err_t jit_wasm_unaryopi(spidir_builder_handle_t builder, buffer_t* c
 
     uint8_t opcode = ((uint8_t*)code->data)[-1];
 
-    // figure the exact type and helper to use
+    // figure the exact type
     spidir_value_type_t type;
-    jit_helper_kind_t helper;
     switch (opcode) {
-        case 0x67: type = SPIDIR_TYPE_I32; helper = JIT_HELPER_I32_CLZ; break;
-        case 0x68: type = SPIDIR_TYPE_I32; helper = JIT_HELPER_I32_CTZ; break;
-        case 0x69: type = SPIDIR_TYPE_I32; helper = JIT_HELPER_I32_POPCNT; break;
-        case 0x79: type = SPIDIR_TYPE_I64; helper = JIT_HELPER_I64_CLZ; break;
-        case 0x7A: type = SPIDIR_TYPE_I64; helper = JIT_HELPER_I64_CTZ; break;
-        case 0x7B: type = SPIDIR_TYPE_I64; helper = JIT_HELPER_I64_POPCNT; break;
+        case 0x67 ... 0x69: type = SPIDIR_TYPE_I32; opcode -= 0x67; break;
+        case 0x79 ... 0x7B: type = SPIDIR_TYPE_I64; opcode -= 0x79; break;
         default: CHECK_FAIL();
     }
 
-    // get the value
+    // get the two values
     spidir_value_t arg = JIT_POP(type);
 
-    // call the helper
-    spidir_funcref_t ref;
-    RETHROW(jit_get_helper(ctx, helper, &ref));
-    spidir_value_t value = spidir_builder_build_call(builder, ref, 1, &arg);
+    // and now perform the action
+    spidir_value_t value;
+    jit_helper_kind_t kind = JIT_HELPER_COUNT;
+    switch (opcode) {
+        case 0: kind = type == SPIDIR_TYPE_I32 ? JIT_HELPER_I32_CLZ : JIT_HELPER_I64_CLZ; break;
+        case 1: kind = type == SPIDIR_TYPE_I32 ? JIT_HELPER_I32_CTZ : JIT_HELPER_I64_CTZ; break;
+        case 2: value = spidir_builder_build_popcount(builder, type, arg); break;
+        default: CHECK_FAIL();
+    }
+
+    // if we have an helper use a helper
+    if (kind < JIT_HELPER_COUNT) {
+        spidir_funcref_t helper = {};
+        RETHROW(jit_get_helper(ctx, kind, &helper));
+        value = spidir_builder_build_call(builder, helper, 1, &arg);
+    }
 
     // and push it back
     JIT_PUSH(type, value);

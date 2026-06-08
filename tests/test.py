@@ -52,7 +52,7 @@ def run_test(main_bin: Path, wasm: Path) -> tuple[bool, float, str, str, str | N
     proc = subprocess.run(
         [
             str(main_bin), 
-            "-m", str(wasm), 
+            "-m", str(wasm),
             '--emit-debug-elf', str(wasm) + '.elf',
             f'--spidir-dump={wasm}.spidir',
         ],

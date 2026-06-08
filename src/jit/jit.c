@@ -3,6 +3,7 @@
 #include "function.h"
 #include "jit/helpers.h"
 #include "jit_internal.h"
+#include "libcall.h"
 #include "buffer.h"
 
 #include "spidir/module.h"
@@ -394,64 +395,70 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
 
             // Resolve the target. The debug-only fields stay UINT32_MAX /
             // unset when capture is off so we don't pay for hmap lookups
-            // we'll never read.
+            // we'll never read. target_kind is captured verbatim from spidir
+            // (see wasm_jit_reloc_t), so we only compute the supplementary
+            // wasm-level fields here.
             void* target = nullptr;
-            wasm_jit_reloc_target_kind_t dbg_target_kind = WASM_JIT_RELOC_TARGET_EXTERNAL;
             uint32_t dbg_target_funcidx = UINT32_MAX;
+            spidir_libcall_kind_t dbg_target_libcall = 0;
 
-            if (reloc->target_kind == SPIDIR_RELOC_TARGET_CONSTPOOL) {
-                target = jit_rodata + const_pool_offset;
-                if (capture_debug) {
-                    dbg_target_kind = WASM_JIT_RELOC_TARGET_CONSTPOOL;
-                }
+            switch (reloc->target_kind) {
+                case SPIDIR_RELOC_TARGET_CONSTPOOL:
+                    target = jit_rodata + const_pool_offset;
+                    break;
 
-            } else if (reloc->target_kind == SPIDIR_RELOC_TARGET_INTERNAL_FUNCTION) {
-                // get the callee entry
-                code_map_entry_t callee_entry = {};
-                CHECK(hmap_lookup(&code_map, reloc->target.internal.id, &callee_entry.value));
-                target = jit_code + callee_entry.code_offset;
+                case SPIDIR_RELOC_TARGET_INTERNAL_FUNCTION: {
+                    // get the callee entry
+                    code_map_entry_t callee_entry = {};
+                    CHECK(hmap_lookup(&code_map, reloc->target.internal.id, &callee_entry.value));
+                    target = jit_code + callee_entry.code_offset;
 
-                // we currently expect local functions to only ever have direct accesses
-                // indirect functions only exist as part of tables which are initialized
-                // in a different place
-                // NOTE: this assumes a direct call won't have a 64bit constant, which is
-                //       true without APX
-                CHECK(reloc->target_kind == SPIDIR_RELOC_X64_PC32);
+                    // we currently expect local functions to only ever have direct accesses
+                    // indirect functions only exist as part of tables which are initialized
+                    // in a different place
+                    // NOTE: this assumes a direct call won't have a 64bit constant, which is
+                    //       true without APX
+                    CHECK(reloc->kind == SPIDIR_RELOC_X64_PC32);
 
-                if (capture_debug) {
-                    uint64_t callee_funcidx = UINT64_MAX;
-                    CHECK(hmap_lookup(&func_to_idx, reloc->target.internal.id, &callee_funcidx));
-                    dbg_target_kind = WASM_JIT_RELOC_TARGET_FUNC;
-                    dbg_target_funcidx = (uint32_t)callee_funcidx;
-                }
-
-            } else if (reloc->target_kind == SPIDIR_RELOC_TARGET_EXTERNAL_FUNCTION) {
-                // For now, externals are only used to call JIT helpers.
-                // Wasm imports use the same target kind but aren't yet
-                // resolvable.
-                target = jit_helper_lookup_address(ctx, reloc->target.external.id);
-                if (target == nullptr) {
-                    // try to look at imports
-                    uint64_t addr;
-                    CHECK(hmap_lookup(&import_map, reloc->target.external.id, &addr));
-                    target = (void*)addr;
-                }
-
-                if (capture_debug) {
-                    // Imports round-trip back to a wasm-level funcidx;
-                    // helpers don't, so they get logged as raw external
-                    // addresses.
-                    uint64_t import_funcidx = UINT64_MAX;
-                    if (hmap_lookup(&extern_to_idx, reloc->target.external.id, &import_funcidx)) {
-                        dbg_target_kind = WASM_JIT_RELOC_TARGET_FUNC;
-                        dbg_target_funcidx = (uint32_t)import_funcidx;
-                    } else {
-                        dbg_target_kind = WASM_JIT_RELOC_TARGET_EXTERNAL;
+                    if (capture_debug) {
+                        uint64_t callee_funcidx = UINT64_MAX;
+                        CHECK(hmap_lookup(&func_to_idx, reloc->target.internal.id, &callee_funcidx));
+                        dbg_target_funcidx = (uint32_t)callee_funcidx;
                     }
-                }
+                } break;
 
-            } else {
-                CHECK_FAIL();
+                case SPIDIR_RELOC_TARGET_EXTERNAL_FUNCTION:
+                    // Externals are either a JIT helper or a wasm import;
+                    // both come through this target kind.
+                    target = jit_helper_lookup_address(ctx, reloc->target.external.id);
+                    if (target == nullptr) {
+                        // try to look at imports
+                        uint64_t addr;
+                        CHECK(hmap_lookup(&import_map, reloc->target.external.id, &addr));
+                        target = (void*)addr;
+                    }
+
+                    if (capture_debug) {
+                        // Imports round-trip back to a wasm-level funcidx;
+                        // helpers don't, so they stay UINT32_MAX and the debug
+                        // ELF names them from their host address instead.
+                        uint64_t import_funcidx = UINT64_MAX;
+                        if (hmap_lookup(&extern_to_idx, reloc->target.external.id, &import_funcidx)) {
+                            dbg_target_funcidx = (uint32_t)import_funcidx;
+                        }
+                    }
+                    break;
+
+                case SPIDIR_RELOC_TARGET_LIBCALL:
+                    target = jit_resolve_libcall(reloc->target.libcall);
+                    CHECK(target != NULL);
+                    if (capture_debug) {
+                        dbg_target_libcall = reloc->target.libcall;
+                    }
+                    break;
+
+                default:
+                    CHECK_FAIL();
             }
 
             // actually apply the reloc
@@ -462,23 +469,18 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
                 target
             ));
 
-            // Record the reloc for the debug ELF. We capture both PC32 and
-            // ABS64 — the ELF emitter only emits ELF relocations for ABS64,
-            // but PC32 entries help label call sites if we ever surface them.
+            // Record the reloc for the debug ELF. Kind and target_kind are
+            // stored as spidir's own types (the ELF emitter only emits ELF
+            // relocations for ABS64, but PC32 entries help label call sites if
+            // we ever surface them).
             if (capture_debug) {
-                wasm_jit_reloc_kind_t dbg_kind;
-                switch (reloc->kind) {
-                    case SPIDIR_RELOC_X64_PC32:  dbg_kind = WASM_JIT_RELOC_X64_PC32; break;
-                    case SPIDIR_RELOC_X64_ABS64: dbg_kind = WASM_JIT_RELOC_X64_ABS64; break;
-                    default: CHECK_FAIL();
-                }
-
                 wasm_jit_reloc_t entry = {
                     .address = jit_code + func_code_offset + reloc->offset,
                     .addend = reloc->addend,
-                    .kind = dbg_kind,
-                    .target_kind = dbg_target_kind,
+                    .kind = reloc->kind,
+                    .target_kind = reloc->target_kind,
                     .target_funcidx = dbg_target_funcidx,
+                    .target_libcall = dbg_target_libcall,
                     .target_address = target,
                     .owner_funcidx = (uint32_t)owner_funcidx,
                 };

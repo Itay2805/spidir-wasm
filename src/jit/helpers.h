@@ -15,11 +15,9 @@ typedef enum jit_helper_kind {
 
     JIT_HELPER_I32_CLZ,
     JIT_HELPER_I32_CTZ,
-    JIT_HELPER_I32_POPCNT,
 
     JIT_HELPER_I64_CLZ,
     JIT_HELPER_I64_CTZ,
-    JIT_HELPER_I64_POPCNT,
 
     JIT_HELPER_TRAP,
 

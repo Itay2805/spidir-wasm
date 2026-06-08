@@ -2,6 +2,7 @@
 
 #include "buffer.h"
 #include "jit/helpers.h"
+#include "jit/libcall.h"
 #include "util/defs.h"
 #include "util/elf_common.h"
 #include "util/except.h"
@@ -9,6 +10,9 @@
 #include "util/vec.h"
 #include "wasm/host.h"
 #include "wasm/jit.h"
+
+#include "spidir/codegen.h"
+#include "spidir/x64.h"
 
 #include <stdint.h>
 
@@ -184,7 +188,7 @@ wasm_err_t wasm_jit_emit_debug_elf(
     // for any tool that reads the .text section as-is.
     uint32_t abs_reloc_count = 0;
     for (size_t i = 0; i < dbg->relocs_count; i++) {
-        if (dbg->relocs[i].kind == WASM_JIT_RELOC_X64_ABS64) {
+        if (dbg->relocs[i].kind == SPIDIR_RELOC_X64_ABS64) {
             abs_reloc_count++;
         }
     }
@@ -311,13 +315,14 @@ wasm_err_t wasm_jit_emit_debug_elf(
         RETHROW(strtab_emit_str(&strtab, label, &off));
 
         // Walk the JIT debug.relocs to find the resolved host address for
-        // this import. Imports without a recorded relocation simply weren't
+        // this import. Only function targets carry a funcidx, and an import's
+        // funcidx is < imports_count, so matching on funcidx alone is
+        // unambiguous. Imports without a recorded relocation simply weren't
         // referenced by any compiled function — emit them with value 0 so
         // the symbol still exists for tooling.
         uint64_t addr = 0;
         for (size_t r = 0; r < dbg->relocs_count; r++) {
-            if (dbg->relocs[r].target_kind == WASM_JIT_RELOC_TARGET_FUNC &&
-                dbg->relocs[r].target_funcidx == i) {
+            if (dbg->relocs[r].target_funcidx == i) {
                 addr = (uint64_t)(uintptr_t)dbg->relocs[r].target_address;
                 break;
             }
@@ -396,44 +401,75 @@ wasm_err_t wasm_jit_emit_debug_elf(
     // of the debug ELF. We only emit ABS64 entries (per the user
     // requirement); PC32 sites are already self-describing.
     //
-    // Helper / external targets that have no corresponding wasm-level symbol
-    // get an SHN_ABS symbol synthesized on demand so the rela entry can name
-    // them. We dedupe by host address so the same helper called from many
-    // places only adds one symbol.
+    // Targets with no corresponding wasm-level symbol — JIT helpers and
+    // spidir libcalls — get an SHN_ABS symbol synthesized on demand so the
+    // rela entry can name them. We dedupe by host address so the same target
+    // called from many places only adds one symbol.
     if (have_rela) {
         for (size_t i = 0; i < dbg->relocs_count; i++) {
             const wasm_jit_reloc_t* r = &dbg->relocs[i];
-            if (r->kind != WASM_JIT_RELOC_X64_ABS64) continue;
+            if (r->kind != SPIDIR_RELOC_X64_ABS64) continue;
 
-            // Resolve the relocation's target to a symbol index. For a
-            // function target we have the slot map; for a const-pool target
-            // we fall back to the .rodata section symbol with an addend that
-            // recovers the absolute offset within the section. External /
-            // helper targets get a synthesized SHN_ABS symbol so their
-            // address still shows up symbolically.
+            // Resolve the relocation's target to a symbol index. Function
+            // targets (internal funcs and imports) use the slot map; a
+            // const-pool target falls back to the .rodata section symbol with
+            // an addend that recovers the absolute offset within the section.
+            // Helpers and libcalls have no wasm symbol — we name them from
+            // their host address (helper) or libcall kind and synthesize an
+            // SHN_ABS symbol below.
             uint32_t sym_index = 0;
             int64_t addend = r->addend;
             uint32_t reloc_type = R_X86_64_64;
 
-            if (r->target_kind == WASM_JIT_RELOC_TARGET_FUNC) {
-                if (r->target_funcidx < total_funcs &&
-                    slots[r->target_funcidx].sym_index != UINT32_MAX) {
-                    sym_index = slots[r->target_funcidx].sym_index;
-                }
-            } else if (r->target_kind == WASM_JIT_RELOC_TARGET_CONSTPOOL) {
-                if (have_rodata) {
-                    sym_index = sym_rodata_section;
-                    // The addend should bring the section symbol up to the
-                    // exact target byte. Section symbols use sh_addr as their
-                    // value, so subtracting it from target_address yields
-                    // the offset to add on top of the recorded addend.
-                    addend += (int64_t)((uint64_t)(uintptr_t)r->target_address
-                                        - (uint64_t)(uintptr_t)dbg->rodata_base);
-                }
-            } else {
-                // External target with no funcidx (a helper). Look it up in
-                // the dedupe cache; if we haven't synthesized a symbol yet,
-                // do it now and remember the index.
+            // Set when the target has no wasm symbol and we must synthesize an
+            // SHN_ABS one; `synth_name` labels it (a null name falls back to a
+            // placeholder rather than chasing a NULL into the string table).
+            bool synth = false;
+            const char* synth_name = nullptr;
+
+            switch (r->target_kind) {
+                case SPIDIR_RELOC_TARGET_INTERNAL_FUNCTION:
+                case SPIDIR_RELOC_TARGET_EXTERNAL_FUNCTION:
+                    // Internal funcs always, and imports, round-trip to a
+                    // funcidx we already emitted a symbol for. An external
+                    // function with no funcidx is a JIT helper — name it from
+                    // its host address and synthesize.
+                    if (r->target_funcidx != UINT32_MAX &&
+                        r->target_funcidx < total_funcs &&
+                        slots[r->target_funcidx].sym_index != UINT32_MAX) {
+                        sym_index = slots[r->target_funcidx].sym_index;
+                    } else {
+                        synth = true;
+                        synth_name = jit_get_helper_name(r->target_address);
+                    }
+                    break;
+
+                case SPIDIR_RELOC_TARGET_CONSTPOOL:
+                    if (have_rodata) {
+                        sym_index = sym_rodata_section;
+                        // The addend should bring the section symbol up to the
+                        // exact target byte. Section symbols use sh_addr as
+                        // their value, so subtracting it from target_address
+                        // yields the offset to add on top of the recorded
+                        // addend.
+                        addend += (int64_t)((uint64_t)(uintptr_t)r->target_address
+                                            - (uint64_t)(uintptr_t)dbg->rodata_base);
+                    }
+                    break;
+
+                case SPIDIR_RELOC_TARGET_LIBCALL:
+                    synth = true;
+                    synth_name = jit_get_libcall_name(r->target_libcall);
+                    break;
+
+                default:
+                    break;
+            }
+
+            // Synthesize (or reuse) an SHN_ABS symbol for helper / libcall
+            // targets, deduped by host address so a target called from many
+            // sites only adds one symbol.
+            if (synth) {
                 for (size_t c = 0; c < ext_cache.length; c++) {
                     if (ext_cache.elements[c].addr == r->target_address) {
                         sym_index = ext_cache.elements[c].sym_index;
@@ -442,7 +478,8 @@ wasm_err_t wasm_jit_emit_debug_elf(
                 }
                 if (sym_index == 0) {
                     uint32_t name_off;
-                    RETHROW(strtab_emit_str(&strtab, jit_get_helper_name(r->target_address), &name_off));
+                    RETHROW(strtab_emit_str(&strtab,
+                        synth_name != nullptr ? synth_name : "<unknown>", &name_off));
 
                     sym_index = (uint32_t)(symtab.len / sizeof(Elf64_Sym));
                     PUSH_SYM(name_off, ELF64_ST_INFO(STB_GLOBAL, STT_FUNC), STV_DEFAULT, SHN_UNDEF, (uint64_t)r->target_address, 0);
