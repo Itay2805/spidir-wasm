@@ -34,12 +34,6 @@ static void jit_helper_memory_init(void* dst, void* data, uint32_t data_len, uin
     }
 }
 
-static uint32_t jit_helper_i32_clz(uint32_t value) { return value == 0 ? 32 : __builtin_clz(value); }
-static uint32_t jit_helper_i32_ctz(uint32_t value) { return value == 0 ? 32 : __builtin_ctz(value); }
-
-static uint64_t jit_helper_i64_clz(uint64_t value) { return value == 0 ? 64 : __builtin_clzll(value); }
-static uint64_t jit_helper_i64_ctz(uint64_t value) { return value == 0 ? 64 : __builtin_ctzll(value); }
-
 static void jit_helper_atomic_store_1(_Atomic(uint8_t)* addr, uint32_t value) { atomic_store(addr, value); }
 static void jit_helper_atomic_store_2(_Atomic(uint16_t)* addr, uint32_t value) { atomic_store(addr, value); }
 static void jit_helper_atomic_store_4(_Atomic(uint32_t)* addr, uint32_t value) { atomic_store(addr, value); }
@@ -120,12 +114,6 @@ static const helper_def_t m_helper_defs[JIT_HELPER_COUNT] = {
     [JIT_HELPER_MEMORY_INIT] = HELPER_FUNC(jit_helper_memory_init, NONE, PTR, PTR, I32, I32, I32),
 
     [JIT_HELPER_TRAP] = HELPER_FUNC(jit_helper_trap, NONE),
-
-    [JIT_HELPER_I32_CLZ] = HELPER_FUNC(jit_helper_i32_clz, I32, I32),
-    [JIT_HELPER_I32_CTZ] = HELPER_FUNC(jit_helper_i32_ctz, I32, I32),
-
-    [JIT_HELPER_I64_CLZ] = HELPER_FUNC(jit_helper_i64_clz, I64, I64),
-    [JIT_HELPER_I64_CTZ] = HELPER_FUNC(jit_helper_i64_ctz, I64, I64),
 
     [JIT_HELPER_ATOMIC_NOTIFY] = HELPER_FUNC(wasm_host_atomic_notify, I32, PTR, I32),
     [JIT_HELPER_ATOMIC_WAIT_4] = HELPER_FUNC(wasm_host_atomic_wait_4, I32, PTR, I32, I64),
