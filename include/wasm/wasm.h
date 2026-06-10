@@ -152,6 +152,11 @@ void wasm_module_init_memory(wasm_module_t* module, void* memory);
 int64_t wasm_find_export(wasm_module_t* module, const char* name);
 
 /**
+ * Get the type of a function from a funcidx
+ */
+wasm_type_t* wasm_get_func(wasm_module_t* module, int64_t index);
+
+/**
  * Free the contents of the given module
  */
 void wasm_module_free(wasm_module_t* module);

@@ -826,3 +826,28 @@ int64_t wasm_find_export(wasm_module_t* module, const char* name) {
     }
     return -1;
 }
+
+wasm_type_t* wasm_get_func(wasm_module_t* module, int64_t index) {
+    if (index < 0) {
+        return nullptr;
+    }
+
+    typeidx_t idx = 0;
+    if (index < module->imports_count) {
+        wasm_import_t* import = &module->imports[index];
+        if (import->kind != WASM_EXTERN_FUNC) {
+            return nullptr;
+        }
+
+        idx = import->index;
+    } else {
+        index -= module->imports_count;
+        if (index >= module->functions_count) {
+            return nullptr;
+        }
+
+        idx = module->functions[index];
+    }
+
+    return &module->types[idx];
+}
