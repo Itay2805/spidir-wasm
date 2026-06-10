@@ -541,7 +541,7 @@ void wasm_host_log(wasm_host_log_level_t log_level, const char* fmt, ...) {
 // Host memory instance handling
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-int32_t wasm_host_memory_size(void* memory_base) {
+int32_t wasm_host_memory_size(void* memory_base, void* state_base) {
     // Lock-free, race-free read. memory.size only has to observe a valid size,
     // not block: the value grows monotonically and grow publishes it with a
     // release store, so a concurrent grow can at worst make this a stale lower
@@ -557,7 +557,7 @@ int32_t wasm_host_memory_size(void* memory_base) {
 // ever touched by their single thread, so the lock is taken only when shared.
 static pthread_mutex_t m_memory_grow_lock = PTHREAD_MUTEX_INITIALIZER;
 
-int32_t wasm_host_memory_grow(void* memory_base, int32_t new_page_count) {
+int32_t wasm_host_memory_grow(void* memory_base, void* state_base, int32_t new_page_count) {
     if (new_page_count < 0) return -1;
 
     bool shared = m_module.memory.shared;

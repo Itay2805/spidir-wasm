@@ -30,8 +30,9 @@ void wasm_host_free(void* ptr);
  * The amount size of the current memory instance. In page count
  *
  * @param memory_base       [IN] the base of memory
+ * @param state_base        [IN] the base of per-thread state
  */
-int32_t wasm_host_memory_size(void* memory_base);
+int32_t wasm_host_memory_size(void* memory_base, void* state_base);
 
 /**
  * Grow the memory instance as given into a wasm function, directly called by memory.grow.
@@ -43,9 +44,10 @@ int32_t wasm_host_memory_size(void* memory_base);
  * TODO: support for returning a different memory base
  *
  * @param memory_base       [IN] The base of memory
+ * @param state_base        [IN] the base of per-thread state
  * @param new_page_count    [IN] The new page count
  */
-int32_t wasm_host_memory_grow(void* memory_base, int32_t new_page_count);
+int32_t wasm_host_memory_grow(void* memory_base, void* state_base, int32_t new_page_count);
 
 /**
  * Allocate a contig region of memory, initially mapped as rw. After the

@@ -829,7 +829,9 @@ static wasm_err_t jit_wasm_memory_size(spidir_builder_handle_t builder, buffer_t
     RETHROW(jit_get_helper(ctx, JIT_HELPER_MEMORY_SIZE, &helper));
 
     spidir_value_t mem_base = spidir_builder_build_param_ref(builder, 0);
-    spidir_value_t args[] = { mem_base };
+    spidir_value_t state_base = spidir_builder_build_param_ref(builder, 1);
+
+    spidir_value_t args[] = { mem_base, state_base };
     spidir_value_t result = spidir_builder_build_call(builder, helper, ARRAY_LENGTH(args), args);
     JIT_PUSH(SPIDIR_TYPE_I32, result);
 
@@ -849,7 +851,9 @@ static wasm_err_t jit_wasm_memory_grow(spidir_builder_handle_t builder, buffer_t
     RETHROW(jit_get_helper(ctx, JIT_HELPER_MEMORY_GROW, &helper));
 
     spidir_value_t mem_base = spidir_builder_build_param_ref(builder, 0);
-    spidir_value_t args[] = { mem_base, n };
+    spidir_value_t state_base = spidir_builder_build_param_ref(builder, 1);
+
+    spidir_value_t args[] = { mem_base, state_base, n };
     spidir_value_t result = spidir_builder_build_call(builder, helper, ARRAY_LENGTH(args), args);
     JIT_PUSH(SPIDIR_TYPE_I32, result);
 
