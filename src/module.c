@@ -313,8 +313,8 @@ static wasm_err_t wasm_parse_memory_section(wasm_module_t* module, buffer_t* buf
     CHECK(!__builtin_mul_overflow(memory->max, WASM_PAGE_SIZE, &memory->max));
 
     // ensure both stay within 4GB
-    CHECK(memory->min < SIZE_4GB);
-    CHECK(memory->max < SIZE_4GB);
+    CHECK(memory->min <= SIZE_4GB);
+    CHECK(memory->max <= SIZE_4GB);
 
     CHECK(buffer->len == 0);
 
