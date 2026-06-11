@@ -268,6 +268,13 @@ cleanup:
     return err;
 }
 
+// The outermost label (index 0) is the function body, whose continuation is
+// the function's return rather than a real block. A branch that targets it is
+// therefore a `return` carrying the function result, not a branch to a block.
+static inline bool jit_is_funcbody_label(jit_function_ctx_t* func, jit_label_t* target) {
+    return target == &func->labels.elements[0];
+}
+
 static wasm_err_t jit_wasm_br(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -276,11 +283,20 @@ static wasm_err_t jit_wasm_br(spidir_builder_handle_t builder, buffer_t* code, j
     CHECK(index < func->labels.length);
     jit_label_t* target = &func->labels.elements[func->labels.length - index - 1];
 
-    // prepare a branch to the target
-    RETHROW(jit_wasm_prepare_branch(builder, func, target));
+    if (jit_is_funcbody_label(func, target)) {
+        // branch to the function body == return, carrying the result if any
+        spidir_value_t value = SPIDIR_VALUE_INVALID;
+        if (func->ret_type != SPIDIR_TYPE_NONE) {
+            value = JIT_POP(func->ret_type);
+        }
+        spidir_builder_build_return(builder, value);
+    } else {
+        // prepare a branch to the target
+        RETHROW(jit_wasm_prepare_branch(builder, func, target));
 
-    // branch into the block
-    spidir_builder_build_branch(builder, target->block);
+        // branch into the block
+        spidir_builder_build_branch(builder, target->block);
+    }
 
     // block is now terminated
     label->terminated = true;
@@ -297,15 +313,27 @@ static wasm_err_t jit_wasm_br_if(spidir_builder_handle_t builder, buffer_t* code
     CHECK(index < func->labels.length);
     jit_label_t* target = &func->labels.elements[func->labels.length - index - 1];
 
-    // prepare a branch to the target
-    RETHROW(jit_wasm_prepare_branch(builder, func, target));
-
     // get the condition
     spidir_value_t c = JIT_POP(SPIDIR_TYPE_I32);
 
     // perform the branch
     spidir_block_t continuation = spidir_builder_create_block(builder);
-    spidir_builder_build_brcond(builder, c, target->block, continuation);
+    if (jit_is_funcbody_label(func, target)) {
+        // taken == return; the result stays on the stack for the not-taken
+        // (fallthrough) path, so peek it rather than pop it.
+        spidir_value_t value = SPIDIR_VALUE_INVALID;
+        if (func->ret_type != SPIDIR_TYPE_NONE) {
+            CHECK(label->stack.length >= 1);
+            value = label->stack.elements[label->stack.length - 1].value;
+        }
+        spidir_block_t ret_block = spidir_builder_create_block(builder);
+        spidir_builder_build_brcond(builder, c, ret_block, continuation);
+        spidir_builder_set_block(builder, ret_block);
+        spidir_builder_build_return(builder, value);
+    } else {
+        RETHROW(jit_wasm_prepare_branch(builder, func, target));
+        spidir_builder_build_brcond(builder, c, target->block, continuation);
+    }
 
     // and continue
     spidir_builder_set_block(builder, continuation);
@@ -327,49 +355,85 @@ static wasm_err_t jit_wasm_br_table(spidir_builder_handle_t builder, buffer_t* c
         uint32_t index = BUFFER_PULL_U32(code);
         CHECK(index < func->labels.length);
         table[i] = &func->labels.elements[func->labels.length - index - 1];
-        RETHROW(jit_wasm_prepare_branch(builder, func, table[i]));
+        // the function-body label has no real continuation block to phi into;
+        // a branch to it is a return, handled below.
+        if (!jit_is_funcbody_label(func, table[i])) {
+            RETHROW(jit_wasm_prepare_branch(builder, func, table[i]));
+        }
     }
 
-    // the default case 
+    // the default case
     uint32_t default_index = BUFFER_PULL_U32(code);
     CHECK(default_index < func->labels.length);
     jit_label_t* default_label = &func->labels.elements[func->labels.length - default_index - 1];
-    RETHROW(jit_wasm_prepare_branch(builder, func, default_label));
+    if (!jit_is_funcbody_label(func, default_label)) {
+        RETHROW(jit_wasm_prepare_branch(builder, func, default_label));
+    }
 
     // the index that we want to choose
     spidir_value_t index = JIT_POP(SPIDIR_TYPE_I32);
 
+    // a branch to the function body is a return; lazily create a single shared
+    // return block and resolve each funcbody-targeting case to it.
+    spidir_block_t ret_block = {0};
+    bool have_ret = false;
+    #define RESOLVE_TARGET(_lbl) ({ \
+        spidir_block_t b__; \
+        if (jit_is_funcbody_label(func, (_lbl))) { \
+            if (!have_ret) { \
+                ret_block = spidir_builder_create_block(builder); \
+                have_ret = true; \
+            } \
+            b__ = ret_block; \
+        } else { \
+            b__ = (_lbl)->block; \
+        } \
+        b__; \
+    })
+
     // the next case to check, for us its the first one
     spidir_block_t try_next_case = spidir_builder_create_block(builder);
 
-    // start with the simplest check, if its less than the case count 
+    // start with the simplest check, if its less than the case count
     // start checking cases, otherwise go directly to the default case
     spidir_builder_build_brcond(builder,
         spidir_builder_build_icmp(builder, SPIDIR_ICMP_ULT, SPIDIR_TYPE_I32, index,
             spidir_builder_build_iconst(builder, SPIDIR_TYPE_I32, table_size)),
-            try_next_case, default_label->block);
+            try_next_case, RESOLVE_TARGET(default_label));
 
     for (int64_t i = 0; i < table_size; i++) {
         spidir_builder_set_block(builder, try_next_case);
-        spidir_block_t target = table[i]->block;
+        spidir_block_t target = RESOLVE_TARGET(table[i]);
 
         if (i == table_size - 1) {
             // we are the last case, we can just jump into the real target
             // NOTE: in theory we could avoid this branch by having the code
-            //       always use the brcond in the other path, but that does not 
+            //       always use the brcond in the other path, but that does not
             //       handle a table of a single entry nicely, this does
             spidir_builder_build_branch(builder, target);
 
         } else {
             // create the block for the next case
             try_next_case = spidir_builder_create_block(builder);
-            
+
             // and emit the check with the current value
             spidir_builder_build_brcond(builder,
             spidir_builder_build_icmp(builder, SPIDIR_ICMP_EQ, SPIDIR_TYPE_I32, index,
                 spidir_builder_build_iconst(builder, SPIDIR_TYPE_I32, i)),
                 target, try_next_case);
         }
+    }
+    #undef RESOLVE_TARGET
+
+    // emit the shared return block (branch-to-function-body == return)
+    if (have_ret) {
+        spidir_value_t value = SPIDIR_VALUE_INVALID;
+        if (func->ret_type != SPIDIR_TYPE_NONE) {
+            CHECK(label->stack.length >= 1);
+            value = label->stack.elements[label->stack.length - 1].value;
+        }
+        spidir_builder_set_block(builder, ret_block);
+        spidir_builder_build_return(builder, value);
     }
 
     // block is now terminated
@@ -389,7 +453,9 @@ static wasm_err_t jit_wasm_return(spidir_builder_handle_t builder, buffer_t* cod
     if (func->ret_type != SPIDIR_TYPE_NONE) {
         value = JIT_POP(func->ret_type);
     }
-    CHECK(label->stack.length == 0);
+    // return is stack-polymorphic: any operands left below the result are
+    // unreachable and simply discarded (spec 4.6.2 return / validation §3).
+    label->stack.length = 0;
     spidir_builder_build_return(builder, value);
 
     // we terminated the label
@@ -1803,8 +1869,10 @@ static wasm_err_t jit_wasm_end(spidir_builder_handle_t builder, buffer_t* code, 
         spidir_builder_set_block(builder, next_block);
     }
 
-    // stack must be empty at this point
-    CHECK(label->stack.length == 0);
+    // the operand stack must be balanced at a block boundary, unless the block
+    // was terminated by a stack-polymorphic branch (br/return/unreachable), in
+    // which case the leftover operands are unreachable and discarded.
+    CHECK(label->terminated || label->stack.length == 0);
 
     // remove the block
     label = nullptr;

@@ -20,8 +20,9 @@ static void jit_helper_memory_fill(void* d, uint32_t val, uint32_t n) {
 }
 
 static void jit_helper_memory_init(void* dst, void* data, uint32_t data_len, uint32_t offset, uint32_t length) {
-    // ensure we don't copy over the data length
-    uint64_t top_offset = offset + length;
+    // ensure we don't copy over the data length. widen BEFORE adding so a
+    // large offset+length can't wrap around uint32 and slip past the bound.
+    uint64_t top_offset = (uint64_t)offset + (uint64_t)length;
     ASSERT(top_offset <= data_len);
 
     if (length != 0) {

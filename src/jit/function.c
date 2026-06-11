@@ -175,7 +175,11 @@ static void jit_build_function(spidir_builder_handle_t builder, void* _ctx) {
         jit_value_t* locals = vec_add(&func.locals, count);
         for (int j = 0; j < count; j++) {
             locals[j].type = jit_get_spidir_value_type(type);
-            locals[j].value = spidir_builder_build_iconst(builder, locals[j].type, 0);
+            switch (locals[j].type) {
+                case SPIDIR_TYPE_F32: locals[j].value = spidir_builder_build_fconst32(builder, 0); break;
+                case SPIDIR_TYPE_F64: locals[j].value = spidir_builder_build_fconst64(builder, 0); break;
+                default:              locals[j].value = spidir_builder_build_iconst(builder, locals[j].type, 0); break;
+            }
         }
     }
 
