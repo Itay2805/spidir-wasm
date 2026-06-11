@@ -1042,22 +1042,6 @@ cleanup:
     return err;
 }
 
-static wasm_err_t jit_wasm_bulk_memory_prefix(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
-    wasm_err_t err = WASM_NO_ERROR;
-
-    uint32_t sub = BUFFER_PULL_U32(code);
-    switch (sub) {
-        case 8: RETHROW(jit_wasm_memory_init(builder, code, ctx, func, label)); break;
-        case 9: RETHROW(jit_wasm_data_drop(builder, code, ctx, func, label)); break;
-        case 10: RETHROW(jit_wasm_memory_copy(builder, code, ctx, func, label)); break;
-        case 11: RETHROW(jit_wasm_memory_fill(builder, code, ctx, func, label)); break;
-        default: CHECK_FAIL("Unsupported bulk-memory sub-opcode %x", sub);
-    }
-
-cleanup:
-    return err;
-}
-
 //----------------------------------------------------------------------------------------------------------------------
 // Numeric Instructions
 //----------------------------------------------------------------------------------------------------------------------
@@ -1255,6 +1239,38 @@ static wasm_err_t jit_wasm_iconv(spidir_builder_handle_t builder, buffer_t* code
 
         default: CHECK_FAIL();
     }
+
+cleanup:
+    return err;
+}
+
+static wasm_err_t jit_wasm_trunc_sat(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    // the 0xFC sub-opcode (0..7) was already consumed by the prefix handler
+    uint8_t sub = ((uint8_t*)code->data)[-1];
+
+    // saturation depends on the exact result/float/sign combo, so each maps to
+    // its own libcall (spidir has no saturating float->int node).
+    spidir_value_type_t in_type, out_type;
+    jit_helper_kind_t kind;
+    switch (sub) {
+        case 0: in_type = SPIDIR_TYPE_F32; out_type = SPIDIR_TYPE_I32; kind = JIT_HELPER_I32_TRUNC_SAT_F32_S; break;
+        case 1: in_type = SPIDIR_TYPE_F32; out_type = SPIDIR_TYPE_I32; kind = JIT_HELPER_I32_TRUNC_SAT_F32_U; break;
+        case 2: in_type = SPIDIR_TYPE_F64; out_type = SPIDIR_TYPE_I32; kind = JIT_HELPER_I32_TRUNC_SAT_F64_S; break;
+        case 3: in_type = SPIDIR_TYPE_F64; out_type = SPIDIR_TYPE_I32; kind = JIT_HELPER_I32_TRUNC_SAT_F64_U; break;
+        case 4: in_type = SPIDIR_TYPE_F32; out_type = SPIDIR_TYPE_I64; kind = JIT_HELPER_I64_TRUNC_SAT_F32_S; break;
+        case 5: in_type = SPIDIR_TYPE_F32; out_type = SPIDIR_TYPE_I64; kind = JIT_HELPER_I64_TRUNC_SAT_F32_U; break;
+        case 6: in_type = SPIDIR_TYPE_F64; out_type = SPIDIR_TYPE_I64; kind = JIT_HELPER_I64_TRUNC_SAT_F64_S; break;
+        case 7: in_type = SPIDIR_TYPE_F64; out_type = SPIDIR_TYPE_I64; kind = JIT_HELPER_I64_TRUNC_SAT_F64_U; break;
+        default: CHECK_FAIL();
+    }
+
+    spidir_value_t arg = JIT_POP(in_type);
+    spidir_funcref_t helper;
+    RETHROW(jit_get_helper(ctx, kind, &helper));
+    spidir_value_t res = spidir_builder_build_call(builder, helper, 1, &arg);
+    JIT_PUSH(out_type, res);
 
 cleanup:
     return err;
@@ -1878,6 +1894,23 @@ cleanup:
 // Instruction lookup table
 //----------------------------------------------------------------------------------------------------------------------
 
+static wasm_err_t jit_wasm_fc_prefix(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint32_t sub = BUFFER_PULL_U32(code);
+    switch (sub) {
+        case 0 ... 7: RETHROW(jit_wasm_trunc_sat(builder, code, ctx, func, label)); break;
+        case 8: RETHROW(jit_wasm_memory_init(builder, code, ctx, func, label)); break;
+        case 9: RETHROW(jit_wasm_data_drop(builder, code, ctx, func, label)); break;
+        case 10: RETHROW(jit_wasm_memory_copy(builder, code, ctx, func, label)); break;
+        case 11: RETHROW(jit_wasm_memory_fill(builder, code, ctx, func, label)); break;
+        default: CHECK_FAIL("Unsupported bulk-memory sub-opcode %x", sub);
+    }
+
+cleanup:
+    return err;
+}
+
 static wasm_err_t jit_wasm_end(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -2005,7 +2038,7 @@ wasm_err_t jit_wasm_opcode(spidir_builder_handle_t builder, buffer_t* code, jit_
         case 0xC0 ... 0xC4: RETHROW(jit_wasm_iconv(builder, code, ctx, func, label)); break;
 
         // Multi-byte prefix instructions
-        case 0xFC: RETHROW(jit_wasm_bulk_memory_prefix(builder, code, ctx, func, label)); break;
+        case 0xFC: RETHROW(jit_wasm_fc_prefix(builder, code, ctx, func, label)); break;
         case 0xFE: RETHROW(jit_wasm_atomic_prefix(builder, code, ctx, func, label)); break;
 
         default:

@@ -78,6 +78,20 @@ static double f64_max(double a, double b) {
 }
 static double f64_copysign(double a, double b) { return __builtin_copysign(a, b); }
 
+// Saturating float->int truncation (spec 4.3.3 itruncsat). Truncates toward
+// zero; NaN -> 0; out-of-range saturates to the int min/max instead of trapping.
+// Clamp BEFORE the cast: the in-range cast is only defined for values strictly
+// below max+1 (which is the exactly-representable power of two used as the
+// upper bound), so >= that bound saturates to the integer maximum.
+static int32_t  i32_trunc_sat_f32_s(float v)  { if (__builtin_isnan(v)) return 0; if (v < -2147483648.0f) return INT32_MIN; if (v >= 2147483648.0f) return INT32_MAX; return (int32_t)v; }
+static uint32_t i32_trunc_sat_f32_u(float v)  { if (__builtin_isnan(v)) return 0; if (v <= 0.0f) return 0; if (v >= 4294967296.0f) return UINT32_MAX; return (uint32_t)v; }
+static int32_t  i32_trunc_sat_f64_s(double v) { if (__builtin_isnan(v)) return 0; if (v < -2147483648.0) return INT32_MIN; if (v >= 2147483648.0) return INT32_MAX; return (int32_t)v; }
+static uint32_t i32_trunc_sat_f64_u(double v) { if (__builtin_isnan(v)) return 0; if (v <= 0.0) return 0; if (v >= 4294967296.0) return UINT32_MAX; return (uint32_t)v; }
+static int64_t  i64_trunc_sat_f32_s(float v)  { if (__builtin_isnan(v)) return 0; if (v < -9223372036854775808.0f) return INT64_MIN; if (v >= 9223372036854775808.0f) return INT64_MAX; return (int64_t)v; }
+static uint64_t i64_trunc_sat_f32_u(float v)  { if (__builtin_isnan(v)) return 0; if (v <= 0.0f) return 0; if (v >= 18446744073709551616.0f) return UINT64_MAX; return (uint64_t)v; }
+static int64_t  i64_trunc_sat_f64_s(double v) { if (__builtin_isnan(v)) return 0; if (v < -9223372036854775808.0) return INT64_MIN; if (v >= 9223372036854775808.0) return INT64_MAX; return (int64_t)v; }
+static uint64_t i64_trunc_sat_f64_u(double v) { if (__builtin_isnan(v)) return 0; if (v <= 0.0) return 0; if (v >= 18446744073709551616.0) return UINT64_MAX; return (uint64_t)v; }
+
 static void atomic_store_1(_Atomic(uint8_t)* addr, uint32_t value) { atomic_store(addr, value); }
 static void atomic_store_2(_Atomic(uint16_t)* addr, uint32_t value) { atomic_store(addr, value); }
 static void atomic_store_4(_Atomic(uint32_t)* addr, uint32_t value) { atomic_store(addr, value); }
@@ -180,6 +194,15 @@ static const helper_def_t m_helper_defs[JIT_HELPER_COUNT] = {
     [JIT_HELPER_F64_MIN] = HELPER_FUNC(f64_min, F64, F64, F64),
     [JIT_HELPER_F64_MAX] = HELPER_FUNC(f64_max, F64, F64, F64),
     [JIT_HELPER_F64_COPYSIGN] = HELPER_FUNC(f64_copysign, F64, F64, F64),
+
+    [JIT_HELPER_I32_TRUNC_SAT_F32_S] = HELPER_FUNC(i32_trunc_sat_f32_s, I32, F32),
+    [JIT_HELPER_I32_TRUNC_SAT_F32_U] = HELPER_FUNC(i32_trunc_sat_f32_u, I32, F32),
+    [JIT_HELPER_I32_TRUNC_SAT_F64_S] = HELPER_FUNC(i32_trunc_sat_f64_s, I32, F64),
+    [JIT_HELPER_I32_TRUNC_SAT_F64_U] = HELPER_FUNC(i32_trunc_sat_f64_u, I32, F64),
+    [JIT_HELPER_I64_TRUNC_SAT_F32_S] = HELPER_FUNC(i64_trunc_sat_f32_s, I64, F32),
+    [JIT_HELPER_I64_TRUNC_SAT_F32_U] = HELPER_FUNC(i64_trunc_sat_f32_u, I64, F32),
+    [JIT_HELPER_I64_TRUNC_SAT_F64_S] = HELPER_FUNC(i64_trunc_sat_f64_s, I64, F64),
+    [JIT_HELPER_I64_TRUNC_SAT_F64_U] = HELPER_FUNC(i64_trunc_sat_f64_u, I64, F64),
 
     [JIT_HELPER_TRAP] = HELPER_FUNC(jit_helper_trap, NONE),
 
