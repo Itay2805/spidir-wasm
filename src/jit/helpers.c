@@ -34,6 +34,22 @@ static void jit_helper_memory_init(void* dst, void* data, uint32_t data_len, uin
     }
 }
 
+static float f32_abs(float value) { return __builtin_fabsf(value); }
+static float f32_neg(float value) { return -value; }
+static float f32_ceil(float value) { return __builtin_ceilf(value); }
+static float f32_floor(float value) { return __builtin_floorf(value); }
+static float f32_trunc(float value) { return __builtin_truncf(value); }
+static float f32_nearest(float value) { return __builtin_nearbyintf(value); }
+static float f32_sqrt(float value) { return __builtin_sqrtf(value); }
+
+static double f64_abs(double value) { return __builtin_fabs(value); }
+static double f64_neg(double value) { return -value; }
+static double f64_ceil(double value) { return __builtin_ceil(value); }
+static double f64_floor(double value) { return __builtin_floor(value); }
+static double f64_trunc(double value) { return __builtin_trunc(value); }
+static double f64_nearest(double value) { return __builtin_nearbyint(value); }
+static double f64_sqrt(double value) { return __builtin_sqrt(value); }
+
 static void jit_helper_atomic_store_1(_Atomic(uint8_t)* addr, uint32_t value) { atomic_store(addr, value); }
 static void jit_helper_atomic_store_2(_Atomic(uint16_t)* addr, uint32_t value) { atomic_store(addr, value); }
 static void jit_helper_atomic_store_4(_Atomic(uint32_t)* addr, uint32_t value) { atomic_store(addr, value); }
@@ -112,6 +128,22 @@ static const helper_def_t m_helper_defs[JIT_HELPER_COUNT] = {
     [JIT_HELPER_MEMORY_COPY] = HELPER_FUNC(jit_helper_memory_copy, NONE, PTR, PTR, I32),
     [JIT_HELPER_MEMORY_FILL] = HELPER_FUNC(jit_helper_memory_fill, NONE, PTR, I32, I32),
     [JIT_HELPER_MEMORY_INIT] = HELPER_FUNC(jit_helper_memory_init, NONE, PTR, PTR, I32, I32, I32),
+
+    [JIT_HELPER_F32_ABS] = HELPER_FUNC(f32_abs, F32, F32),
+    [JIT_HELPER_F32_NEG] = HELPER_FUNC(f32_neg, F32, F32),
+    [JIT_HELPER_F32_CEIL] = HELPER_FUNC(f32_ceil, F32, F32),
+    [JIT_HELPER_F32_FLOOR] = HELPER_FUNC(f32_floor, F32, F32),
+    [JIT_HELPER_F32_TRUNC] = HELPER_FUNC(f32_trunc, F32, F32),
+    [JIT_HELPER_F32_NEAREST] = HELPER_FUNC(f32_nearest, F32, F32),
+    [JIT_HELPER_F32_SQRT] = HELPER_FUNC(f32_sqrt, F32, F32),
+
+    [JIT_HELPER_F64_ABS] = HELPER_FUNC(f64_abs, F64, F64),
+    [JIT_HELPER_F64_NEG] = HELPER_FUNC(f64_neg, F64, F64),
+    [JIT_HELPER_F64_CEIL] = HELPER_FUNC(f64_ceil, F64, F64),
+    [JIT_HELPER_F64_FLOOR] = HELPER_FUNC(f64_floor, F64, F64),
+    [JIT_HELPER_F64_TRUNC] = HELPER_FUNC(f64_trunc, F64, F64),
+    [JIT_HELPER_F64_NEAREST] = HELPER_FUNC(f64_nearest, F64, F64),
+    [JIT_HELPER_F64_SQRT] = HELPER_FUNC(f64_sqrt, F64, F64),
 
     [JIT_HELPER_TRAP] = HELPER_FUNC(jit_helper_trap, NONE),
 

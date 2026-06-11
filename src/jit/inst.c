@@ -1313,6 +1313,45 @@ cleanup:
     return err;
 }
 
+static wasm_err_t jit_wasm_unaryopf(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint8_t opcode = ((uint8_t*)code->data)[-1];
+
+    // figure the exact type
+    spidir_value_type_t type;
+    switch (opcode) {
+        case 0x8B ... 0x91: type = SPIDIR_TYPE_F32; opcode -= 0x8B; break;
+        case 0x99 ... 0x9F: type = SPIDIR_TYPE_F64; opcode -= 0x99; break;
+        default: CHECK_FAIL();
+    }
+
+    // get the two values
+    spidir_value_t arg = JIT_POP(type);
+
+    jit_helper_kind_t helper;
+    switch (opcode) {
+        case 0: helper = (type == SPIDIR_TYPE_F32) ? JIT_HELPER_F32_ABS : JIT_HELPER_F64_ABS; break;
+        case 1: helper = (type == SPIDIR_TYPE_F32) ? JIT_HELPER_F32_NEG : JIT_HELPER_F64_NEG; break;
+        case 2: helper = (type == SPIDIR_TYPE_F32) ? JIT_HELPER_F32_CEIL : JIT_HELPER_F64_CEIL; break;
+        case 3: helper = (type == SPIDIR_TYPE_F32) ? JIT_HELPER_F32_FLOOR : JIT_HELPER_F64_FLOOR; break;
+        case 4: helper = (type == SPIDIR_TYPE_F32) ? JIT_HELPER_F32_TRUNC : JIT_HELPER_F64_TRUNC; break;
+        case 5: helper = (type == SPIDIR_TYPE_F32) ? JIT_HELPER_F32_NEAREST : JIT_HELPER_F64_NEAREST; break;
+        case 6: helper = (type == SPIDIR_TYPE_F32) ? JIT_HELPER_F32_SQRT : JIT_HELPER_F64_SQRT; break;
+        default: CHECK_FAIL();
+    }
+
+    spidir_funcref_t helper_func;
+    RETHROW(jit_get_helper(ctx, helper, &helper_func));
+    spidir_value_t value = spidir_builder_build_call(builder, helper_func, 1, &arg);
+
+    // and push it back
+    JIT_PUSH(type, value);
+
+cleanup:
+    return err;
+}
+
 static wasm_err_t jit_wasm_binopf(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -1813,7 +1852,9 @@ wasm_err_t jit_wasm_opcode(spidir_builder_handle_t builder, buffer_t* code, jit_
         case 0x79 ... 0x7B: RETHROW(jit_wasm_unaryopi(builder, code, ctx, func, label)); break;
         case 0x7C ... 0x85: RETHROW(jit_wasm_binopi(builder, code, ctx, func, label)); break;
         case 0x86 ... 0x8A: RETHROW(jit_wasm_shift(builder, code, ctx, func, label)); break;
+        case 0x8B ... 0x91: RETHROW(jit_wasm_unaryopf(builder, code, ctx, func, label)); break;
         case 0x92 ... 0x95: RETHROW(jit_wasm_binopf(builder, code, ctx, func, label)); break;
+        case 0x99 ... 0x9F: RETHROW(jit_wasm_unaryopf(builder, code, ctx, func, label)); break;
         case 0xA0 ... 0xA3: RETHROW(jit_wasm_binopf(builder, code, ctx, func, label)); break;
 
         // Conversions
