@@ -42,6 +42,21 @@ static float f32_trunc(float value) { return __builtin_truncf(value); }
 static float f32_nearest(float value) { return __builtin_nearbyintf(value); }
 static float f32_sqrt(float value) { return __builtin_sqrtf(value); }
 
+// wasm min/max are not C fmin/fmax: a NaN input must yield a NaN (spec
+// 4.3.3 fmin/fmax), and ties on signed zero are sign-aware
+// (min(±0,∓0) = -0, max(±0,∓0) = +0).
+static float f32_min(float a, float b) {
+    if (__builtin_isnan(a) || __builtin_isnan(b)) return a + b;  // propagate a NaN
+    if (a == b) return __builtin_signbit(a) ? a : b;             // -0 beats +0
+    return a < b ? a : b;
+}
+static float f32_max(float a, float b) {
+    if (__builtin_isnan(a) || __builtin_isnan(b)) return a + b;  // propagate a NaN
+    if (a == b) return __builtin_signbit(a) ? b : a;             // +0 beats -0
+    return a > b ? a : b;
+}
+static float f32_copysign(float a, float b) { return __builtin_copysignf(a, b); }
+
 static double f64_abs(double value) { return __builtin_fabs(value); }
 static double f64_neg(double value) { return -value; }
 static double f64_ceil(double value) { return __builtin_ceil(value); }
@@ -49,6 +64,18 @@ static double f64_floor(double value) { return __builtin_floor(value); }
 static double f64_trunc(double value) { return __builtin_trunc(value); }
 static double f64_nearest(double value) { return __builtin_nearbyint(value); }
 static double f64_sqrt(double value) { return __builtin_sqrt(value); }
+
+static double f64_min(double a, double b) {
+    if (__builtin_isnan(a) || __builtin_isnan(b)) return a + b;  // propagate a NaN
+    if (a == b) return __builtin_signbit(a) ? a : b;             // -0 beats +0
+    return a < b ? a : b;
+}
+static double f64_max(double a, double b) {
+    if (__builtin_isnan(a) || __builtin_isnan(b)) return a + b;  // propagate a NaN
+    if (a == b) return __builtin_signbit(a) ? b : a;             // +0 beats -0
+    return a > b ? a : b;
+}
+static double f64_copysign(double a, double b) { return __builtin_copysign(a, b); }
 
 static void jit_helper_atomic_store_1(_Atomic(uint8_t)* addr, uint32_t value) { atomic_store(addr, value); }
 static void jit_helper_atomic_store_2(_Atomic(uint16_t)* addr, uint32_t value) { atomic_store(addr, value); }
@@ -137,6 +164,10 @@ static const helper_def_t m_helper_defs[JIT_HELPER_COUNT] = {
     [JIT_HELPER_F32_NEAREST] = HELPER_FUNC(f32_nearest, F32, F32),
     [JIT_HELPER_F32_SQRT] = HELPER_FUNC(f32_sqrt, F32, F32),
 
+    [JIT_HELPER_F32_MIN] = HELPER_FUNC(f32_min, F32, F32, F32),
+    [JIT_HELPER_F32_MAX] = HELPER_FUNC(f32_max, F32, F32, F32),
+    [JIT_HELPER_F32_COPYSIGN] = HELPER_FUNC(f32_copysign, F32, F32, F32),
+
     [JIT_HELPER_F64_ABS] = HELPER_FUNC(f64_abs, F64, F64),
     [JIT_HELPER_F64_NEG] = HELPER_FUNC(f64_neg, F64, F64),
     [JIT_HELPER_F64_CEIL] = HELPER_FUNC(f64_ceil, F64, F64),
@@ -144,6 +175,10 @@ static const helper_def_t m_helper_defs[JIT_HELPER_COUNT] = {
     [JIT_HELPER_F64_TRUNC] = HELPER_FUNC(f64_trunc, F64, F64),
     [JIT_HELPER_F64_NEAREST] = HELPER_FUNC(f64_nearest, F64, F64),
     [JIT_HELPER_F64_SQRT] = HELPER_FUNC(f64_sqrt, F64, F64),
+
+    [JIT_HELPER_F64_MIN] = HELPER_FUNC(f64_min, F64, F64, F64),
+    [JIT_HELPER_F64_MAX] = HELPER_FUNC(f64_max, F64, F64, F64),
+    [JIT_HELPER_F64_COPYSIGN] = HELPER_FUNC(f64_copysign, F64, F64, F64),
 
     [JIT_HELPER_TRAP] = HELPER_FUNC(jit_helper_trap, NONE),
 
