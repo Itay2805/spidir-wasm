@@ -78,50 +78,50 @@ static double f64_max(double a, double b) {
 }
 static double f64_copysign(double a, double b) { return __builtin_copysign(a, b); }
 
-static void jit_helper_atomic_store_1(_Atomic(uint8_t)* addr, uint32_t value) { atomic_store(addr, value); }
-static void jit_helper_atomic_store_2(_Atomic(uint16_t)* addr, uint32_t value) { atomic_store(addr, value); }
-static void jit_helper_atomic_store_4(_Atomic(uint32_t)* addr, uint32_t value) { atomic_store(addr, value); }
-static void jit_helper_atomic_store_8(_Atomic(uint64_t)* addr, uint64_t value) { atomic_store(addr, value); }
+static void atomic_store_1(_Atomic(uint8_t)* addr, uint32_t value) { atomic_store(addr, value); }
+static void atomic_store_2(_Atomic(uint16_t)* addr, uint32_t value) { atomic_store(addr, value); }
+static void atomic_store_4(_Atomic(uint32_t)* addr, uint32_t value) { atomic_store(addr, value); }
+static void atomic_store_8(_Atomic(uint64_t)* addr, uint64_t value) { atomic_store(addr, value); }
 
-static uint32_t jit_helper_atomic_load_1(_Atomic(uint8_t)* addr) { return atomic_load(addr); }
-static uint32_t jit_helper_atomic_load_2(_Atomic(uint16_t)* addr) { return atomic_load(addr); }
-static uint32_t jit_helper_atomic_load_4(_Atomic(uint32_t)* addr) { return atomic_load(addr); }
-static uint64_t jit_helper_atomic_load_8(_Atomic(uint64_t)* addr) { return atomic_load(addr); }
+static uint32_t atomic_load_1(_Atomic(uint8_t)* addr) { return atomic_load(addr); }
+static uint32_t atomic_load_2(_Atomic(uint16_t)* addr) { return atomic_load(addr); }
+static uint32_t atomic_load_4(_Atomic(uint32_t)* addr) { return atomic_load(addr); }
+static uint64_t atomic_load_8(_Atomic(uint64_t)* addr) { return atomic_load(addr); }
 
-static uint32_t jit_helper_atomic_rmw_add_1(_Atomic(uint8_t)* addr, uint32_t value) { return atomic_fetch_add(addr, value); }
-static uint32_t jit_helper_atomic_rmw_add_2(_Atomic(uint16_t)* addr, uint32_t value) { return atomic_fetch_add(addr, value); }
-static uint32_t jit_helper_atomic_rmw_add_4(_Atomic(uint32_t)* addr, uint32_t value) { return atomic_fetch_add(addr, value); }
-static uint64_t jit_helper_atomic_rmw_add_8(_Atomic(uint64_t)* addr, uint64_t value) { return atomic_fetch_add(addr, value); }
+static uint32_t atomic_rmw_add_1(_Atomic(uint8_t)* addr, uint32_t value) { return atomic_fetch_add(addr, value); }
+static uint32_t atomic_rmw_add_2(_Atomic(uint16_t)* addr, uint32_t value) { return atomic_fetch_add(addr, value); }
+static uint32_t atomic_rmw_add_4(_Atomic(uint32_t)* addr, uint32_t value) { return atomic_fetch_add(addr, value); }
+static uint64_t atomic_rmw_add_8(_Atomic(uint64_t)* addr, uint64_t value) { return atomic_fetch_add(addr, value); }
 
-static uint32_t jit_helper_atomic_rmw_sub_1(_Atomic(uint8_t)* addr, uint32_t value) { return atomic_fetch_sub(addr, value); }
-static uint32_t jit_helper_atomic_rmw_sub_2(_Atomic(uint16_t)* addr, uint32_t value) { return atomic_fetch_sub(addr, value); }
-static uint32_t jit_helper_atomic_rmw_sub_4(_Atomic(uint32_t)* addr, uint32_t value) { return atomic_fetch_sub(addr, value); }
-static uint64_t jit_helper_atomic_rmw_sub_8(_Atomic(uint64_t)* addr, uint64_t value) { return atomic_fetch_sub(addr, value); }
+static uint32_t atomic_rmw_sub_1(_Atomic(uint8_t)* addr, uint32_t value) { return atomic_fetch_sub(addr, value); }
+static uint32_t atomic_rmw_sub_2(_Atomic(uint16_t)* addr, uint32_t value) { return atomic_fetch_sub(addr, value); }
+static uint32_t atomic_rmw_sub_4(_Atomic(uint32_t)* addr, uint32_t value) { return atomic_fetch_sub(addr, value); }
+static uint64_t atomic_rmw_sub_8(_Atomic(uint64_t)* addr, uint64_t value) { return atomic_fetch_sub(addr, value); }
 
-static uint32_t jit_helper_atomic_rmw_and_1(_Atomic(uint8_t)* addr, uint32_t value) { return atomic_fetch_and(addr, value); }
-static uint32_t jit_helper_atomic_rmw_and_2(_Atomic(uint16_t)* addr, uint32_t value) { return atomic_fetch_and(addr, value); }
-static uint32_t jit_helper_atomic_rmw_and_4(_Atomic(uint32_t)* addr, uint32_t value) { return atomic_fetch_and(addr, value); }
-static uint64_t jit_helper_atomic_rmw_and_8(_Atomic(uint64_t)* addr, uint64_t value) { return atomic_fetch_and(addr, value); }
+static uint32_t atomic_rmw_and_1(_Atomic(uint8_t)* addr, uint32_t value) { return atomic_fetch_and(addr, value); }
+static uint32_t atomic_rmw_and_2(_Atomic(uint16_t)* addr, uint32_t value) { return atomic_fetch_and(addr, value); }
+static uint32_t atomic_rmw_and_4(_Atomic(uint32_t)* addr, uint32_t value) { return atomic_fetch_and(addr, value); }
+static uint64_t atomic_rmw_and_8(_Atomic(uint64_t)* addr, uint64_t value) { return atomic_fetch_and(addr, value); }
 
-static uint32_t jit_helper_atomic_rmw_or_1(_Atomic(uint8_t)* addr, uint32_t value) { return atomic_fetch_or(addr, value); }
-static uint32_t jit_helper_atomic_rmw_or_2(_Atomic(uint16_t)* addr, uint32_t value) { return atomic_fetch_or(addr, value); }
-static uint32_t jit_helper_atomic_rmw_or_4(_Atomic(uint32_t)* addr, uint32_t value) { return atomic_fetch_or(addr, value); }
-static uint64_t jit_helper_atomic_rmw_or_8(_Atomic(uint64_t)* addr, uint64_t value) { return atomic_fetch_or(addr, value); }
+static uint32_t atomic_rmw_or_1(_Atomic(uint8_t)* addr, uint32_t value) { return atomic_fetch_or(addr, value); }
+static uint32_t atomic_rmw_or_2(_Atomic(uint16_t)* addr, uint32_t value) { return atomic_fetch_or(addr, value); }
+static uint32_t atomic_rmw_or_4(_Atomic(uint32_t)* addr, uint32_t value) { return atomic_fetch_or(addr, value); }
+static uint64_t atomic_rmw_or_8(_Atomic(uint64_t)* addr, uint64_t value) { return atomic_fetch_or(addr, value); }
 
-static uint32_t jit_helper_atomic_rmw_xor_1(_Atomic(uint8_t)* addr, uint32_t value) { return atomic_fetch_xor(addr, value); }
-static uint32_t jit_helper_atomic_rmw_xor_2(_Atomic(uint16_t)* addr, uint32_t value) { return atomic_fetch_xor(addr, value); }
-static uint32_t jit_helper_atomic_rmw_xor_4(_Atomic(uint32_t)* addr, uint32_t value) { return atomic_fetch_xor(addr, value); }
-static uint64_t jit_helper_atomic_rmw_xor_8(_Atomic(uint64_t)* addr, uint64_t value) { return atomic_fetch_xor(addr, value); }
+static uint32_t atomic_rmw_xor_1(_Atomic(uint8_t)* addr, uint32_t value) { return atomic_fetch_xor(addr, value); }
+static uint32_t atomic_rmw_xor_2(_Atomic(uint16_t)* addr, uint32_t value) { return atomic_fetch_xor(addr, value); }
+static uint32_t atomic_rmw_xor_4(_Atomic(uint32_t)* addr, uint32_t value) { return atomic_fetch_xor(addr, value); }
+static uint64_t atomic_rmw_xor_8(_Atomic(uint64_t)* addr, uint64_t value) { return atomic_fetch_xor(addr, value); }
 
-static uint32_t jit_helper_atomic_rmw_xchg_1(_Atomic(uint8_t)* addr, uint32_t value) { return atomic_exchange(addr, value); }
-static uint32_t jit_helper_atomic_rmw_xchg_2(_Atomic(uint16_t)* addr, uint32_t value) { return atomic_exchange(addr, value); }
-static uint32_t jit_helper_atomic_rmw_xchg_4(_Atomic(uint32_t)* addr, uint32_t value) { return atomic_exchange(addr, value); }
-static uint64_t jit_helper_atomic_rmw_xchg_8(_Atomic(uint64_t)* addr, uint64_t value) { return atomic_exchange(addr, value); }
+static uint32_t atomic_rmw_xchg_1(_Atomic(uint8_t)* addr, uint32_t value) { return atomic_exchange(addr, value); }
+static uint32_t atomic_rmw_xchg_2(_Atomic(uint16_t)* addr, uint32_t value) { return atomic_exchange(addr, value); }
+static uint32_t atomic_rmw_xchg_4(_Atomic(uint32_t)* addr, uint32_t value) { return atomic_exchange(addr, value); }
+static uint64_t atomic_rmw_xchg_8(_Atomic(uint64_t)* addr, uint64_t value) { return atomic_exchange(addr, value); }
 
-static uint32_t jit_helper_atomic_rmw_cmpxchg_1(_Atomic(uint8_t)* addr, uint32_t expected, uint32_t replacement) { uint8_t old = expected; atomic_compare_exchange_strong(addr, &old, replacement); return old; }
-static uint32_t jit_helper_atomic_rmw_cmpxchg_2(_Atomic(uint16_t)* addr, uint32_t expected, uint32_t replacement) { uint16_t old = expected; atomic_compare_exchange_strong(addr, &old, replacement); return old; }
-static uint32_t jit_helper_atomic_rmw_cmpxchg_4(_Atomic(uint32_t)* addr, uint32_t expected, uint32_t replacement) { uint32_t old = expected; atomic_compare_exchange_strong(addr, &old, replacement); return old; }
-static uint64_t jit_helper_atomic_rmw_cmpxchg_8(_Atomic(uint64_t)* addr, uint64_t expected, uint64_t replacement) { uint64_t old = expected; atomic_compare_exchange_strong(addr, &old, replacement); return old; }
+static uint32_t atomic_rmw_cmpxchg_1(_Atomic(uint8_t)* addr, uint32_t expected, uint32_t replacement) { uint8_t old = expected; atomic_compare_exchange_strong(addr, &old, replacement); return old; }
+static uint32_t atomic_rmw_cmpxchg_2(_Atomic(uint16_t)* addr, uint32_t expected, uint32_t replacement) { uint16_t old = expected; atomic_compare_exchange_strong(addr, &old, replacement); return old; }
+static uint32_t atomic_rmw_cmpxchg_4(_Atomic(uint32_t)* addr, uint32_t expected, uint32_t replacement) { uint32_t old = expected; atomic_compare_exchange_strong(addr, &old, replacement); return old; }
+static uint64_t atomic_rmw_cmpxchg_8(_Atomic(uint64_t)* addr, uint64_t expected, uint64_t replacement) { uint64_t old = expected; atomic_compare_exchange_strong(addr, &old, replacement); return old; }
 
 static void jit_helper_trap(void) {
     __builtin_trap();
@@ -187,50 +187,50 @@ static const helper_def_t m_helper_defs[JIT_HELPER_COUNT] = {
     [JIT_HELPER_ATOMIC_WAIT_4] = HELPER_FUNC(wasm_host_atomic_wait_4, I32, PTR, I32, I64),
     [JIT_HELPER_ATOMIC_WAIT_8] = HELPER_FUNC(wasm_host_atomic_wait_8, I32, PTR, I64, I64),
 
-    [JIT_HELPER_ATOMIC_STORE_1] = HELPER_FUNC(jit_helper_atomic_store_1, NONE, PTR, I32),
-    [JIT_HELPER_ATOMIC_STORE_2] = HELPER_FUNC(jit_helper_atomic_store_2, NONE, PTR, I32),
-    [JIT_HELPER_ATOMIC_STORE_4] = HELPER_FUNC(jit_helper_atomic_store_4, NONE, PTR, I32),
-    [JIT_HELPER_ATOMIC_STORE_8] = HELPER_FUNC(jit_helper_atomic_store_8, NONE, PTR, I64),
+    [JIT_HELPER_ATOMIC_STORE_1] = HELPER_FUNC(atomic_store_1, NONE, PTR, I32),
+    [JIT_HELPER_ATOMIC_STORE_2] = HELPER_FUNC(atomic_store_2, NONE, PTR, I32),
+    [JIT_HELPER_ATOMIC_STORE_4] = HELPER_FUNC(atomic_store_4, NONE, PTR, I32),
+    [JIT_HELPER_ATOMIC_STORE_8] = HELPER_FUNC(atomic_store_8, NONE, PTR, I64),
 
-    [JIT_HELPER_ATOMIC_LOAD_1] = HELPER_FUNC(jit_helper_atomic_load_1, I32, PTR),
-    [JIT_HELPER_ATOMIC_LOAD_2] = HELPER_FUNC(jit_helper_atomic_load_2, I32, PTR),
-    [JIT_HELPER_ATOMIC_LOAD_4] = HELPER_FUNC(jit_helper_atomic_load_4, I32, PTR),
-    [JIT_HELPER_ATOMIC_LOAD_8] = HELPER_FUNC(jit_helper_atomic_load_8, I64, PTR),
+    [JIT_HELPER_ATOMIC_LOAD_1] = HELPER_FUNC(atomic_load_1, I32, PTR),
+    [JIT_HELPER_ATOMIC_LOAD_2] = HELPER_FUNC(atomic_load_2, I32, PTR),
+    [JIT_HELPER_ATOMIC_LOAD_4] = HELPER_FUNC(atomic_load_4, I32, PTR),
+    [JIT_HELPER_ATOMIC_LOAD_8] = HELPER_FUNC(atomic_load_8, I64, PTR),
 
-    [JIT_HELPER_ATOMIC_RMW_ADD_1] = HELPER_FUNC(jit_helper_atomic_rmw_add_1, I32, PTR, I32),
-    [JIT_HELPER_ATOMIC_RMW_ADD_2] = HELPER_FUNC(jit_helper_atomic_rmw_add_2, I32, PTR, I32),
-    [JIT_HELPER_ATOMIC_RMW_ADD_4] = HELPER_FUNC(jit_helper_atomic_rmw_add_4, I32, PTR, I32),
-    [JIT_HELPER_ATOMIC_RMW_ADD_8] = HELPER_FUNC(jit_helper_atomic_rmw_add_8, I64, PTR, I64),
+    [JIT_HELPER_ATOMIC_RMW_ADD_1] = HELPER_FUNC(atomic_rmw_add_1, I32, PTR, I32),
+    [JIT_HELPER_ATOMIC_RMW_ADD_2] = HELPER_FUNC(atomic_rmw_add_2, I32, PTR, I32),
+    [JIT_HELPER_ATOMIC_RMW_ADD_4] = HELPER_FUNC(atomic_rmw_add_4, I32, PTR, I32),
+    [JIT_HELPER_ATOMIC_RMW_ADD_8] = HELPER_FUNC(atomic_rmw_add_8, I64, PTR, I64),
 
-    [JIT_HELPER_ATOMIC_RMW_SUB_1] = HELPER_FUNC(jit_helper_atomic_rmw_sub_1, I32, PTR, I32),
-    [JIT_HELPER_ATOMIC_RMW_SUB_2] = HELPER_FUNC(jit_helper_atomic_rmw_sub_2, I32, PTR, I32),
-    [JIT_HELPER_ATOMIC_RMW_SUB_4] = HELPER_FUNC(jit_helper_atomic_rmw_sub_4, I32, PTR, I32),
-    [JIT_HELPER_ATOMIC_RMW_SUB_8] = HELPER_FUNC(jit_helper_atomic_rmw_sub_8, I64, PTR, I64),
+    [JIT_HELPER_ATOMIC_RMW_SUB_1] = HELPER_FUNC(atomic_rmw_sub_1, I32, PTR, I32),
+    [JIT_HELPER_ATOMIC_RMW_SUB_2] = HELPER_FUNC(atomic_rmw_sub_2, I32, PTR, I32),
+    [JIT_HELPER_ATOMIC_RMW_SUB_4] = HELPER_FUNC(atomic_rmw_sub_4, I32, PTR, I32),
+    [JIT_HELPER_ATOMIC_RMW_SUB_8] = HELPER_FUNC(atomic_rmw_sub_8, I64, PTR, I64),
 
-    [JIT_HELPER_ATOMIC_RMW_AND_1] = HELPER_FUNC(jit_helper_atomic_rmw_and_1, I32, PTR, I32),
-    [JIT_HELPER_ATOMIC_RMW_AND_2] = HELPER_FUNC(jit_helper_atomic_rmw_and_2, I32, PTR, I32),
-    [JIT_HELPER_ATOMIC_RMW_AND_4] = HELPER_FUNC(jit_helper_atomic_rmw_and_4, I32, PTR, I32),
-    [JIT_HELPER_ATOMIC_RMW_AND_8] = HELPER_FUNC(jit_helper_atomic_rmw_and_8, I64, PTR, I64),
+    [JIT_HELPER_ATOMIC_RMW_AND_1] = HELPER_FUNC(atomic_rmw_and_1, I32, PTR, I32),
+    [JIT_HELPER_ATOMIC_RMW_AND_2] = HELPER_FUNC(atomic_rmw_and_2, I32, PTR, I32),
+    [JIT_HELPER_ATOMIC_RMW_AND_4] = HELPER_FUNC(atomic_rmw_and_4, I32, PTR, I32),
+    [JIT_HELPER_ATOMIC_RMW_AND_8] = HELPER_FUNC(atomic_rmw_and_8, I64, PTR, I64),
 
-    [JIT_HELPER_ATOMIC_RMW_OR_1] = HELPER_FUNC(jit_helper_atomic_rmw_or_1, I32, PTR, I32),
-    [JIT_HELPER_ATOMIC_RMW_OR_2] = HELPER_FUNC(jit_helper_atomic_rmw_or_2, I32, PTR, I32),
-    [JIT_HELPER_ATOMIC_RMW_OR_4] = HELPER_FUNC(jit_helper_atomic_rmw_or_4, I32, PTR, I32),
-    [JIT_HELPER_ATOMIC_RMW_OR_8] = HELPER_FUNC(jit_helper_atomic_rmw_or_8, I64, PTR, I64),
+    [JIT_HELPER_ATOMIC_RMW_OR_1] = HELPER_FUNC(atomic_rmw_or_1, I32, PTR, I32),
+    [JIT_HELPER_ATOMIC_RMW_OR_2] = HELPER_FUNC(atomic_rmw_or_2, I32, PTR, I32),
+    [JIT_HELPER_ATOMIC_RMW_OR_4] = HELPER_FUNC(atomic_rmw_or_4, I32, PTR, I32),
+    [JIT_HELPER_ATOMIC_RMW_OR_8] = HELPER_FUNC(atomic_rmw_or_8, I64, PTR, I64),
 
-    [JIT_HELPER_ATOMIC_RMW_XOR_1] = HELPER_FUNC(jit_helper_atomic_rmw_xor_1, I32, PTR, I32),
-    [JIT_HELPER_ATOMIC_RMW_XOR_2] = HELPER_FUNC(jit_helper_atomic_rmw_xor_2, I32, PTR, I32),
-    [JIT_HELPER_ATOMIC_RMW_XOR_4] = HELPER_FUNC(jit_helper_atomic_rmw_xor_4, I32, PTR, I32),
-    [JIT_HELPER_ATOMIC_RMW_XOR_8] = HELPER_FUNC(jit_helper_atomic_rmw_xor_8, I64, PTR, I64),
+    [JIT_HELPER_ATOMIC_RMW_XOR_1] = HELPER_FUNC(atomic_rmw_xor_1, I32, PTR, I32),
+    [JIT_HELPER_ATOMIC_RMW_XOR_2] = HELPER_FUNC(atomic_rmw_xor_2, I32, PTR, I32),
+    [JIT_HELPER_ATOMIC_RMW_XOR_4] = HELPER_FUNC(atomic_rmw_xor_4, I32, PTR, I32),
+    [JIT_HELPER_ATOMIC_RMW_XOR_8] = HELPER_FUNC(atomic_rmw_xor_8, I64, PTR, I64),
 
-    [JIT_HELPER_ATOMIC_RMW_XCHG_1] = HELPER_FUNC(jit_helper_atomic_rmw_xchg_1, I32, PTR, I32),
-    [JIT_HELPER_ATOMIC_RMW_XCHG_2] = HELPER_FUNC(jit_helper_atomic_rmw_xchg_2, I32, PTR, I32),
-    [JIT_HELPER_ATOMIC_RMW_XCHG_4] = HELPER_FUNC(jit_helper_atomic_rmw_xchg_4, I32, PTR, I32),
-    [JIT_HELPER_ATOMIC_RMW_XCHG_8] = HELPER_FUNC(jit_helper_atomic_rmw_xchg_8, I64, PTR, I64),
+    [JIT_HELPER_ATOMIC_RMW_XCHG_1] = HELPER_FUNC(atomic_rmw_xchg_1, I32, PTR, I32),
+    [JIT_HELPER_ATOMIC_RMW_XCHG_2] = HELPER_FUNC(atomic_rmw_xchg_2, I32, PTR, I32),
+    [JIT_HELPER_ATOMIC_RMW_XCHG_4] = HELPER_FUNC(atomic_rmw_xchg_4, I32, PTR, I32),
+    [JIT_HELPER_ATOMIC_RMW_XCHG_8] = HELPER_FUNC(atomic_rmw_xchg_8, I64, PTR, I64),
 
-    [JIT_HELPER_ATOMIC_RMW_CMPXCHG_1] = HELPER_FUNC(jit_helper_atomic_rmw_cmpxchg_1, I32, PTR, I32, I32),
-    [JIT_HELPER_ATOMIC_RMW_CMPXCHG_2] = HELPER_FUNC(jit_helper_atomic_rmw_cmpxchg_2, I32, PTR, I32, I32),
-    [JIT_HELPER_ATOMIC_RMW_CMPXCHG_4] = HELPER_FUNC(jit_helper_atomic_rmw_cmpxchg_4, I32, PTR, I32, I32),
-    [JIT_HELPER_ATOMIC_RMW_CMPXCHG_8] = HELPER_FUNC(jit_helper_atomic_rmw_cmpxchg_8, I64, PTR, I64, I64),
+    [JIT_HELPER_ATOMIC_RMW_CMPXCHG_1] = HELPER_FUNC(atomic_rmw_cmpxchg_1, I32, PTR, I32, I32),
+    [JIT_HELPER_ATOMIC_RMW_CMPXCHG_2] = HELPER_FUNC(atomic_rmw_cmpxchg_2, I32, PTR, I32, I32),
+    [JIT_HELPER_ATOMIC_RMW_CMPXCHG_4] = HELPER_FUNC(atomic_rmw_cmpxchg_4, I32, PTR, I32, I32),
+    [JIT_HELPER_ATOMIC_RMW_CMPXCHG_8] = HELPER_FUNC(atomic_rmw_cmpxchg_8, I64, PTR, I64, I64),
 };
 
 wasm_err_t jit_get_helper(jit_context_t* ctx, jit_helper_kind_t kind, spidir_funcref_t* out) {
