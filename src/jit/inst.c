@@ -2,6 +2,7 @@
 
 #include "function.h"
 #include "jit/helpers.h"
+#include "jit/jit_internal.h"
 #include "spidir/module.h"
 #include "util/vec.h"
 #include "util/defs.h"
@@ -1204,9 +1205,8 @@ cleanup:
     return err;
 }
 
-// Integer-to-integer conversions: wrap, extend (signed/unsigned), and the
-// sign-extension-within-type ops. Skipping reinterpret_* because spidir has
-// no bitcast builder.
+// Integer-to-integer conversions: wrap, extend (signed/unsigned)
+// sign-extension-within-type ops
 //   0xA7 i32.wrap_i64     -> itrunc
 //   0xAC i64.extend_i32_s -> iext + sfill 32
 //   0xAD i64.extend_i32_u -> iext + and 0xFFFFFFFF
@@ -1304,6 +1304,62 @@ static wasm_err_t jit_wasm_fconv(spidir_builder_handle_t builder, buffer_t* code
 
         default: CHECK_FAIL();
     }
+
+cleanup:
+    return err;
+}
+
+static wasm_err_t jit_wasm_bitcast(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint8_t opcode = ((uint8_t*)code->data)[-1];
+
+    spidir_value_type_t to_type;
+    spidir_value_type_t from_type;
+    spidir_mem_size_t mem_size;
+    size_t size, align;
+    switch (opcode) {
+        case 0xBC: {
+            from_type = SPIDIR_TYPE_F32;
+            to_type = SPIDIR_TYPE_I32;
+            size = 4;
+            mem_size = SPIDIR_MEM_SIZE_4;
+            align = MAX(_Alignof(float), _Alignof(uint32_t));
+        } break;
+
+        case 0xBD: {
+            from_type = SPIDIR_TYPE_F64;
+            to_type = SPIDIR_TYPE_I64;
+            size = 8;
+            mem_size = SPIDIR_MEM_SIZE_8;
+            align = MAX(_Alignof(double), _Alignof(uint64_t));
+        } break;
+
+        case 0xBE: {
+            from_type = SPIDIR_TYPE_I32;
+            to_type = SPIDIR_TYPE_F32;
+            size = 4;
+            mem_size = SPIDIR_MEM_SIZE_4;
+            align = MAX(_Alignof(float), _Alignof(uint32_t));
+        } break;
+
+        case 0xBF: {
+            from_type = SPIDIR_TYPE_I64;
+            to_type = SPIDIR_TYPE_F64;
+            size = 8;
+            mem_size = SPIDIR_MEM_SIZE_8;
+            align = MAX(_Alignof(double), _Alignof(uint64_t));
+        } break;
+
+        default: CHECK_FAIL();
+    }
+
+    // we are going to perform the bitcast via a stack slot, by just saving it and restoring it
+    spidir_value_t value = JIT_POP(from_type);
+    spidir_value_t slot = spidir_builder_build_stackslot(builder, size, align);
+    spidir_builder_build_store(builder, mem_size, value, slot);
+    spidir_value_t res = spidir_builder_build_load(builder, mem_size, to_type, slot);
+    JIT_PUSH(to_type, res);
 
 cleanup:
     return err;
@@ -1945,6 +2001,7 @@ wasm_err_t jit_wasm_opcode(spidir_builder_handle_t builder, buffer_t* code, jit_
         case 0xB6: RETHROW(jit_wasm_fconv(builder, code, ctx, func, label)); break;
         case 0xB7 ... 0xBA: RETHROW(jit_wasm_itof(builder, code, ctx, func, label)); break;
         case 0xBB: RETHROW(jit_wasm_fconv(builder, code, ctx, func, label)); break;
+        case 0xBC ... 0xBF: RETHROW(jit_wasm_bitcast(builder, code, ctx, func, label)); break;
         case 0xC0 ... 0xC4: RETHROW(jit_wasm_iconv(builder, code, ctx, func, label)); break;
 
         // Multi-byte prefix instructions
