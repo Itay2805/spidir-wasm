@@ -113,13 +113,15 @@ include ../scripts/build.mk
 # is linked. WAT-built bins don't go through ld so they don't need this.
 $(bin-outputs): $(WASI_RT_LIB)
 
-# WAT cases: assemble cases/<name>.wat → build/<name> directly.
-cases-wat-src := $(wildcard cases/*.wat)
+# WAT cases: assemble cases/<name>.wat → build/<name> directly. Cases under
+# cases/trap/ assemble to build/trap/<name> and are expected to trap at runtime
+# (the test runner treats anything under a trap/ dir as "must exit non-zero").
+cases-wat-src := $(wildcard cases/*.wat) $(wildcard cases/trap/*.wat)
 wat-bin-outputs := $(patsubst cases/%.wat,$(BUILD)/%,$(cases-wat-src))
 targets += $(wat-bin-outputs)
 
 quiet_cmd_wat = WAT     $@
-      cmd_wat = $(WAT2WASM) --debug-names $< -o $@
+      cmd_wat = mkdir -p $(@D) && $(WAT2WASM) --debug-names --enable-threads $< -o $@
 
 $(wat-bin-outputs): $(BUILD)/%: cases/%.wat FORCE
 	$(call cmd,wat)

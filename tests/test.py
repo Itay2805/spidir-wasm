@@ -46,12 +46,23 @@ def discover_tests(build_dir: Path) -> list[Path]:
     return sorted(p for p in build_dir.rglob("*") if is_wasm(p))
 
 
-def run_test(main_bin: Path, wasm: Path) -> tuple[bool, float, str, str, str | None]:
+def is_trap_test(wasm: Path, build_dir: Path) -> bool:
+    """Cases living under a `trap/` directory are expected to trap at runtime.
+
+    The JIT realizes wasm traps as hardware faults (SIGFPE on div-by-zero,
+    SIGSEGV on out-of-bounds / null indirect call, SIGILL on `unreachable`),
+    so the observable contract is simply "the module aborts" — i.e. exits
+    non-zero instead of returning 0.
+    """
+    return "trap" in wasm.relative_to(build_dir).parts
+
+
+def run_test(main_bin: Path, wasm: Path, expect_trap: bool) -> tuple[bool, float, str, str, str | None]:
     """Run one test and return (ok, elapsed, stdout, stderr, reason_if_failed)."""
     start = time.monotonic()
     proc = subprocess.run(
         [
-            str(main_bin), 
+            str(main_bin),
             "-m", str(wasm),
             '--emit-debug-elf', str(wasm) + '.elf',
             f'--spidir-dump={wasm}.spidir',
@@ -60,6 +71,12 @@ def run_test(main_bin: Path, wasm: Path) -> tuple[bool, float, str, str, str | N
         text=True,
     )
     elapsed = time.monotonic() - start
+
+    if expect_trap:
+        # trap cases pass iff the module aborts (non-zero exit / fatal signal)
+        if proc.returncode == 0:
+            return False, elapsed, proc.stdout, proc.stderr, "expected a trap but exited 0"
+        return True, elapsed, proc.stdout, proc.stderr, None
 
     if proc.returncode != 0:
         return False, elapsed, proc.stdout, proc.stderr, f"exit code {proc.returncode}"
@@ -104,11 +121,13 @@ def main() -> int:
         task = progress.add_task("running…", total=len(tests))
         for wasm in tests:
             name = wasm.relative_to(build_dir)
+            expect_trap = is_trap_test(wasm, build_dir)
             progress.update(task, description=f"[cyan]{name}")
-            ok, elapsed, out, err, reason = run_test(main_bin, wasm)
+            ok, elapsed, out, err, reason = run_test(main_bin, wasm, expect_trap)
             results.append((name, ok, elapsed))
             mark = "[green]✓[/]" if ok else "[red]✗[/]"
-            console.print(f"  {mark} {name} [dim]({elapsed:.2f}s)[/]")
+            tag = " [dim yellow](trap)[/]" if expect_trap else ""
+            console.print(f"  {mark} {name}{tag} [dim]({elapsed:.2f}s)[/]")
             if not ok:
                 failures.append((name, out, err, reason or "failed"))
             progress.advance(task)
