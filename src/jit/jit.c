@@ -30,21 +30,7 @@ static wasm_err_t jit_build_state_init(
     void* jit_code, hmap_t* code_map
 );
 
-static void spidir_log_callback(spidir_log_level_t level, const char* module, size_t module_len, const char* message, size_t message_len) {
-    switch (level) {
-        default:
-        case SPIDIR_LOG_LEVEL_TRACE: DEBUG("%.*s: %.*s", (int)module_len, module, (int)message_len, message); break;
-        case SPIDIR_LOG_LEVEL_DEBUG: DEBUG("%.*s: %.*s", (int)module_len, module, (int)message_len, message); break;
-        case SPIDIR_LOG_LEVEL_INFO: TRACE("%.*s: %.*s", (int)module_len, module, (int)message_len, message); break;
-        case SPIDIR_LOG_LEVEL_WARN: WARN("%.*s: %.*s", (int)module_len, module, (int)message_len, message); break;
-        case SPIDIR_LOG_LEVEL_ERROR: ERROR("%.*s: %.*s", (int)module_len, module, (int)message_len, message); break;
-    }
-}
-
 static void wasm_jit_init(void) {
-    spidir_log_init(spidir_log_callback);
-    spidir_log_set_max_level(SPIDIR_LOG_LEVEL_DEBUG);
-
     spidir_x64_machine_config_t machine_config = {
         .extern_code_model = SPIDIR_X64_CM_LARGE_ABS,
         .internal_code_model = SPIDIR_X64_CM_SMALL_PIC,
