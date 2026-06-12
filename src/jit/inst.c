@@ -132,12 +132,18 @@ cleanup:
 // Control Instructions
 //----------------------------------------------------------------------------------------------------------------------
 
-static wasm_err_t jit_wasm_pull_block_type(buffer_t* code) {
+static wasm_err_t jit_wasm_pull_block_type(buffer_t* code, spidir_value_type_t* out_result_type) {
     wasm_err_t err = WASM_NO_ERROR;
 
-    // TODO: support for other block types
     uint8_t byte = BUFFER_PULL(uint8_t, code);
-    CHECK(byte == 0x40);
+    switch (byte) {
+        case 0x40: *out_result_type = SPIDIR_TYPE_NONE; break;
+        case 0x7F: *out_result_type = SPIDIR_TYPE_I32; break;
+        case 0x7E: *out_result_type = SPIDIR_TYPE_I64; break;
+        case 0x7D: *out_result_type = SPIDIR_TYPE_F32; break;
+        case 0x7C: *out_result_type = SPIDIR_TYPE_F64; break;
+        default: CHECK_FAIL("unsupported block type 0x%x", byte);
+    }
 
 cleanup:
     return err;
@@ -146,7 +152,8 @@ cleanup:
 static wasm_err_t jit_wasm_block(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
-    RETHROW(jit_wasm_pull_block_type(code));
+    spidir_value_type_t result_type;
+    RETHROW(jit_wasm_pull_block_type(code, &result_type));
 
     // append a new label
     jit_label_t* new_label = vec_add(&func->labels, 1);
@@ -154,6 +161,7 @@ static wasm_err_t jit_wasm_block(spidir_builder_handle_t builder, buffer_t* code
 
     // this is the block after this block ends
     new_label->block = spidir_builder_create_block(builder);
+    new_label->result_type = result_type;
 
 cleanup:
     return err;
@@ -162,7 +170,8 @@ cleanup:
 static wasm_err_t jit_wasm_loop(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
-    RETHROW(jit_wasm_pull_block_type(code));
+    spidir_value_type_t result_type;
+    RETHROW(jit_wasm_pull_block_type(code, &result_type));
 
     // append a new label
     jit_label_t* new_label = vec_add(&func->labels, 1);
@@ -175,6 +184,7 @@ static wasm_err_t jit_wasm_loop(spidir_builder_handle_t builder, buffer_t* code,
 
     // this is a loop
     new_label->loop = true;
+    new_label->result_type = result_type;
 
     // we need to prepare the locals of the label with phis from the get-go,
     // because a loop has backwards jumps so we can't know ahead of time
@@ -205,8 +215,12 @@ cleanup:
     return err;
 }
 
-static wasm_err_t jit_wasm_prepare_branch(spidir_builder_handle_t builder, jit_function_ctx_t* func, jit_label_t* target) {
+static wasm_err_t jit_wasm_prepare_branch(spidir_builder_handle_t builder, jit_function_ctx_t* func, jit_label_t* target, spidir_value_t result_value) {
     wasm_err_t err = WASM_NO_ERROR;
+
+    // we only need to merge the result if we are in a block and it has a result, loops
+    // return their value on the end, so it is handled in there
+    bool merge_result = target->result_type != SPIDIR_TYPE_NONE && !target->loop;
 
     if (target->locals_values == nullptr) {
         // first attempt at going to the label, just copy
@@ -218,9 +232,13 @@ static wasm_err_t jit_wasm_prepare_branch(spidir_builder_handle_t builder, jit_f
 
         for (int i = 0; i < func->locals.length; i++) {
             target->locals_values[i] = func->locals.elements[i].value;
-
-            // TODO: this is not standard...
             target->locals_phis[i].id = UINT32_MAX;
+        }
+
+        // same treatment for the result
+        if (merge_result) {
+            target->result_value = result_value;
+            target->result_phi.id = UINT32_MAX;
         }
 
     } else {
@@ -258,6 +276,25 @@ static wasm_err_t jit_wasm_prepare_branch(spidir_builder_handle_t builder, jit_f
             spidir_builder_add_phi_input(builder, target->locals_phis[i], func->locals.elements[i].value);
         }
 
+        // and the result value, lazily creating its phi only once it diverges
+        if (merge_result && result_value.id != target->result_value.id) {
+            if (target->result_phi.id == UINT32_MAX) {
+                spidir_value_t value = spidir_builder_build_phi(builder,
+                    target->result_type, 
+                    0, nullptr, 
+                    &target->result_phi
+                );
+
+                for (int j = 0; j < target->inputs; j++) {
+                    spidir_builder_add_phi_input(builder, target->result_phi, target->result_value);
+                }
+
+                target->result_value = value;
+            }
+
+            spidir_builder_add_phi_input(builder, target->result_phi, result_value);
+        }
+
         // switch back
         spidir_builder_set_block(builder, current);
     }
@@ -292,8 +329,15 @@ static wasm_err_t jit_wasm_br(spidir_builder_handle_t builder, buffer_t* code, j
         }
         spidir_builder_build_return(builder, value);
     } else {
+        // a branch to a block with a result carries that result on the stack;
+        // a branch to a loop re-enters it and carries nothing.
+        spidir_value_t result = SPIDIR_VALUE_INVALID;
+        if (target->result_type != SPIDIR_TYPE_NONE && !target->loop) {
+            result = JIT_POP(target->result_type);
+        }
+
         // prepare a branch to the target
-        RETHROW(jit_wasm_prepare_branch(builder, func, target));
+        RETHROW(jit_wasm_prepare_branch(builder, func, target, result));
 
         // branch into the block
         spidir_builder_build_branch(builder, target->block);
@@ -332,7 +376,14 @@ static wasm_err_t jit_wasm_br_if(spidir_builder_handle_t builder, buffer_t* code
         spidir_builder_set_block(builder, ret_block);
         spidir_builder_build_return(builder, value);
     } else {
-        RETHROW(jit_wasm_prepare_branch(builder, func, target));
+        // taken carries the block result; not-taken keeps it on the stack for
+        // the continuation, so peek (not pop) it.
+        spidir_value_t result = SPIDIR_VALUE_INVALID;
+        if (target->result_type != SPIDIR_TYPE_NONE && !target->loop) {
+            CHECK(label->stack.length >= 1);
+            result = label->stack.elements[label->stack.length - 1].value;
+        }
+        RETHROW(jit_wasm_prepare_branch(builder, func, target, result));
         spidir_builder_build_brcond(builder, c, target->block, continuation);
     }
 
@@ -352,27 +403,41 @@ static wasm_err_t jit_wasm_br_table(spidir_builder_handle_t builder, buffer_t* c
     table = CALLOC(jit_label_t*, table_size);
     CHECK(table != nullptr);
 
+    // read all of the target labels
     for (int64_t i = 0; i < table_size; i++) {
         uint32_t index = BUFFER_PULL_U32(code);
         CHECK(index < func->labels.length);
         table[i] = &func->labels.elements[func->labels.length - index - 1];
-        // the function-body label has no real continuation block to phi into;
-        // a branch to it is a return, handled below.
-        if (!jit_is_funcbody_label(func, table[i])) {
-            RETHROW(jit_wasm_prepare_branch(builder, func, table[i]));
-        }
     }
 
     // the default case
     uint32_t default_index = BUFFER_PULL_U32(code);
     CHECK(default_index < func->labels.length);
     jit_label_t* default_label = &func->labels.elements[func->labels.length - default_index - 1];
-    if (!jit_is_funcbody_label(func, default_label)) {
-        RETHROW(jit_wasm_prepare_branch(builder, func, default_label));
-    }
 
     // the index that we want to choose
     spidir_value_t index = JIT_POP(SPIDIR_TYPE_I32);
+
+    // every br_table target has the same arity, so the default is representative.
+    // pop the single branch operand (block result / function return) once and
+    // feed it to each target. a loop target carries nothing (re-enters its head).
+    spidir_value_t branch_value = SPIDIR_VALUE_INVALID;
+    if (jit_is_funcbody_label(func, default_label)) {
+        if (func->ret_type != SPIDIR_TYPE_NONE) branch_value = JIT_POP(func->ret_type);
+    } else if (default_label->result_type != SPIDIR_TYPE_NONE && !default_label->loop) {
+        branch_value = JIT_POP(default_label->result_type);
+    }
+
+    // the function-body label has no real continuation block to phi into; a
+    // branch to it is a return (handled by RESOLVE_TARGET / the block below).
+    for (int64_t i = 0; i < table_size; i++) {
+        if (!jit_is_funcbody_label(func, table[i])) {
+            RETHROW(jit_wasm_prepare_branch(builder, func, table[i], table[i]->loop ? SPIDIR_VALUE_INVALID : branch_value));
+        }
+    }
+    if (!jit_is_funcbody_label(func, default_label)) {
+        RETHROW(jit_wasm_prepare_branch(builder, func, default_label, default_label->loop ? SPIDIR_VALUE_INVALID : branch_value));
+    }
 
     // a branch to the function body is a return; lazily create a single shared
     // return block and resolve each funcbody-targeting case to it.
@@ -426,15 +491,11 @@ static wasm_err_t jit_wasm_br_table(spidir_builder_handle_t builder, buffer_t* c
     }
     #undef RESOLVE_TARGET
 
-    // emit the shared return block (branch-to-function-body == return)
+    // emit the shared return block (branch-to-function-body == return). the
+    // return value is the branch operand already popped above.
     if (have_ret) {
-        spidir_value_t value = SPIDIR_VALUE_INVALID;
-        if (func->ret_type != SPIDIR_TYPE_NONE) {
-            CHECK(label->stack.length >= 1);
-            value = label->stack.elements[label->stack.length - 1].value;
-        }
         spidir_builder_set_block(builder, ret_block);
-        spidir_builder_build_return(builder, value);
+        spidir_builder_build_return(builder, branch_value);
     }
 
     // block is now terminated
@@ -1914,6 +1975,16 @@ cleanup:
 static wasm_err_t jit_wasm_end(spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx, jit_function_ctx_t* func, jit_label_t* label) {
     wasm_err_t err = WASM_NO_ERROR;
 
+    // a block/loop result to hand back to the enclosing label once this one is
+    // popped (the function-body case returns instead, so never pushes).
+    bool push_result = false;
+    spidir_value_type_t push_type = SPIDIR_TYPE_NONE;
+    spidir_value_t push_value = SPIDIR_VALUE_INVALID;
+
+    // set when a terminated loop's continuation is unreachable, so the enclosing
+    // label must be marked terminated too (its fallthrough can't be reached).
+    bool propagate_terminated = false;
+
     if (func->labels.length == 1) {
         // can't be a loop
         CHECK(!label->loop);
@@ -1930,8 +2001,13 @@ static wasm_err_t jit_wasm_end(spidir_builder_handle_t builder, buffer_t* code, 
 
     } else if (!label->loop) {
         if (!label->terminated) {
-            // handle fallthrough from a block into its label
-            RETHROW(jit_wasm_prepare_branch(builder, func, label));
+            // handle fallthrough from a block into its label, carrying the
+            // result (if any) as just another incoming edge to the merge
+            spidir_value_t result = SPIDIR_VALUE_INVALID;
+            if (label->result_type != SPIDIR_TYPE_NONE) {
+                result = JIT_POP(label->result_type);
+            }
+            RETHROW(jit_wasm_prepare_branch(builder, func, label, result));
             spidir_builder_build_branch(builder, label->block);
         }
 
@@ -1943,11 +2019,25 @@ static wasm_err_t jit_wasm_end(spidir_builder_handle_t builder, buffer_t* code, 
 
         // and use the new block
         spidir_builder_set_block(builder, label->block);
+
+        // the merged result (a plain value or result_phi) lives in label->block
+        // and dominates the continuation, so hand it to the enclosing label
+        if (label->result_type != SPIDIR_TYPE_NONE) {
+            push_result = true;
+            push_type = label->result_type;
+            push_value = label->result_value;
+        }
     } else {
         spidir_block_t next_block = spidir_builder_create_block(builder);
 
+        // a loop's result is produced only on the fallthrough exit, so it has a
+        // single source and needs no phi: the value computed before the branch
+        // dominates next_block.
+        spidir_value_t result = SPIDIR_VALUE_INVALID;
         if (!label->terminated) {
-            // if not terminated fallthrough
+            if (label->result_type != SPIDIR_TYPE_NONE) {
+                result = JIT_POP(label->result_type);
+            }
             spidir_builder_build_branch(builder, next_block);
         }
 
@@ -1956,6 +2046,20 @@ static wasm_err_t jit_wasm_end(spidir_builder_handle_t builder, buffer_t* code, 
         // point of the loop)
 
         spidir_builder_set_block(builder, next_block);
+
+        if (!label->terminated) {
+            if (label->result_type != SPIDIR_TYPE_NONE) {
+                push_result = true;
+                push_type = label->result_type;
+                push_value = result;
+            }
+        } else {
+            // the loop never falls through (it only exits via inner branches, e.g.
+            // an infinite loop with an inner return), so next_block is unreachable:
+            // give it a terminator and mark the enclosing label unreachable too.
+            spidir_builder_build_unreachable(builder);
+            propagate_terminated = true;
+        }
     }
 
     // the operand stack must be balanced at a block boundary, unless the block
@@ -1967,6 +2071,19 @@ static wasm_err_t jit_wasm_end(spidir_builder_handle_t builder, buffer_t* code, 
     label = nullptr;
     jit_label_t top_label = vec_pop(&func->labels);
     jit_free_label(&top_label);
+
+    // hand the result back to the now-current (enclosing) label
+    if (push_result) {
+        jit_label_t* parent = &vec_last(&func->labels);
+        jit_value_t v = { .type = push_type, .value = push_value };
+        vec_push(&parent->stack, v);
+    }
+
+    // the code right after an unconditionally-looping loop is unreachable
+    if (propagate_terminated) {
+        jit_label_t* parent = &vec_last(&func->labels);
+        parent->terminated = true;
+    }
 
 cleanup:
     return err;

@@ -37,6 +37,12 @@ typedef struct jit_label {
 
     // did we terminate the block yet
     bool terminated;
+
+    // if the label has a result type this will be non-null, 
+    // behaves the same as local_phis/local_values
+    spidir_value_type_t result_type;
+    spidir_phi_t result_phi;
+    spidir_value_t result_value;
 } jit_label_t;
 
 typedef vec(jit_label_t) jit_labels_t;

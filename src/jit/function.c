@@ -143,7 +143,7 @@ static void jit_build_function(spidir_builder_handle_t builder, void* _ctx) {
     };
 
     // the main block
-    jit_label_t label = {};
+    jit_label_t label = { .result_type = SPIDIR_TYPE_NONE };
 
     // setup params
     wasm_value_type_t* arg_types = type->arg_types;
