@@ -1393,50 +1393,17 @@ static wasm_err_t jit_wasm_bitcast(spidir_builder_handle_t builder, buffer_t* co
 
     spidir_value_type_t to_type;
     spidir_value_type_t from_type;
-    spidir_mem_size_t mem_size;
-    size_t size, align;
     switch (opcode) {
-        case 0xBC: {
-            from_type = SPIDIR_TYPE_F32;
-            to_type = SPIDIR_TYPE_I32;
-            size = 4;
-            mem_size = SPIDIR_MEM_SIZE_4;
-            align = MAX(_Alignof(float), _Alignof(uint32_t));
-        } break;
-
-        case 0xBD: {
-            from_type = SPIDIR_TYPE_F64;
-            to_type = SPIDIR_TYPE_I64;
-            size = 8;
-            mem_size = SPIDIR_MEM_SIZE_8;
-            align = MAX(_Alignof(double), _Alignof(uint64_t));
-        } break;
-
-        case 0xBE: {
-            from_type = SPIDIR_TYPE_I32;
-            to_type = SPIDIR_TYPE_F32;
-            size = 4;
-            mem_size = SPIDIR_MEM_SIZE_4;
-            align = MAX(_Alignof(float), _Alignof(uint32_t));
-        } break;
-
-        case 0xBF: {
-            from_type = SPIDIR_TYPE_I64;
-            to_type = SPIDIR_TYPE_F64;
-            size = 8;
-            mem_size = SPIDIR_MEM_SIZE_8;
-            align = MAX(_Alignof(double), _Alignof(uint64_t));
-        } break;
-
+        case 0xBC: from_type = SPIDIR_TYPE_F32; to_type = SPIDIR_TYPE_I32; break;
+        case 0xBD: from_type = SPIDIR_TYPE_F64; to_type = SPIDIR_TYPE_I64; break;
+        case 0xBE: from_type = SPIDIR_TYPE_I32; to_type = SPIDIR_TYPE_F32; break;
+        case 0xBF: from_type = SPIDIR_TYPE_I64; to_type = SPIDIR_TYPE_F64; break;
         default: CHECK_FAIL();
     }
 
-    // we are going to perform the bitcast via a stack slot, by just saving it and restoring it
     spidir_value_t value = JIT_POP(from_type);
-    spidir_value_t slot = spidir_builder_build_stackslot(builder, size, align);
-    spidir_builder_build_store(builder, mem_size, value, slot);
-    spidir_value_t res = spidir_builder_build_load(builder, mem_size, to_type, slot);
-    JIT_PUSH(to_type, res);
+    value = spidir_builder_build_bitcast(builder, to_type, value);
+    JIT_PUSH(to_type, value);
 
 cleanup:
     return err;
