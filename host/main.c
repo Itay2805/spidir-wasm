@@ -74,6 +74,7 @@ typedef enum option_type {
     OPTION_SPIDIR_DUMP,
     OPTION_EMIT_DEBUG_ELF,
     OPTION_GDB_JIT,
+    OPTION_JIT_ONLY,
 } option_type_t;
 
 static struct option long_options[] = {
@@ -83,6 +84,10 @@ static struct option long_options[] = {
     { "log-level", required_argument, 0, OPTION_LOG_LEVEL },
 
     { "spidir-dump", optional_argument, 0, OPTION_SPIDIR_DUMP },
+
+    // only jit, don't actually run anything, this will also 
+    // enable a dummy resolver that returns a dummy function for everything
+    { "jit-only", no_argument, 0, OPTION_JIT_ONLY },
 
     // Dump a debug ELF that mirrors the JIT'd binary (see
     // wasm_jit_emit_debug_elf). Useful with `objdump -d -r` or `readelf -a`.
@@ -249,6 +254,10 @@ static void* resolve_import(void* arg, const char* module, const char* name, was
     return nullptr;
 }
 
+static void* dummy_resolve_import(void* arg, const char* module, const char* name, wasm_type_t* type) {
+    return dummy_resolve_import;
+}
+
 int main(int argc, char** argv) {
     wasm_err_t err = WASM_NO_ERROR;
     FILE* module_file = nullptr;
@@ -273,6 +282,7 @@ int main(int argc, char** argv) {
         .resolve_import = resolve_import,
     };
 
+    bool jit_only = false;
     bool used_help = false;
     while (1) {
         int option_index = 0;
@@ -287,6 +297,11 @@ int main(int argc, char** argv) {
                 CHECK(module_path == nullptr, "Module already specified");
                 module_path = strdup(optarg);
                 CHECK(module_path != nullptr);
+            } break;
+
+            case OPTION_JIT_ONLY: {
+                jit_only = true;
+                config.resolve_import = dummy_resolve_import;
             } break;
 
             case OPTION_DEBUG: {
@@ -468,7 +483,7 @@ int main(int argc, char** argv) {
     }
 
     // start with running the start section, it should always run no matter what
-    if (m_module.start_func >= 0) {
+    if (!jit_only && m_module.start_func >= 0) {
         m_module_jit.start_func(m_memory_base, state_base);
     }
     
@@ -478,7 +493,9 @@ int main(int argc, char** argv) {
     int (*entry)(void* memory, void* state) = m_module_jit.exports[index].func.address;
 
     // and run it
-    status = entry(m_memory_base, state_base);
+    if (!jit_only) {
+        status = entry(m_memory_base, state_base);
+    }
 
 cleanup:
     // Unregister the GDB JIT entry before freeing the ELF buffer, otherwise
