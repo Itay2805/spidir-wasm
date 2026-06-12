@@ -281,9 +281,13 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
         // constpool
         //
 
-        rodata_size += ALIGN_UP(rodata_size, spidir_codegen_blob_get_constpool_align(blob));
-        size_t rodata_offset = rodata_size;
-        rodata_size += spidir_codegen_blob_get_constpool_size(blob);
+        size_t constpool_size = spidir_codegen_blob_get_constpool_size(blob);
+        size_t rodata_offset = -1;
+        if (constpool_size != 0) {
+            rodata_size += ALIGN_UP(rodata_size, spidir_codegen_blob_get_constpool_align(blob));
+            rodata_offset = rodata_size;
+            rodata_size += constpool_size;
+        }
 
         //
         // code
