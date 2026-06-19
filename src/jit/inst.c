@@ -108,19 +108,7 @@ static wasm_err_t jit_wasm_select(spidir_builder_handle_t builder, buffer_t* cod
     jit_value_t val1 = vec_pop(&label->stack);
     CHECK(val1.type == val2.type);
 
-    // prepare the next block
-    spidir_block_t next_block = spidir_builder_create_block(builder);
-
-    // we are going to use a brcond, if its zero it will take val1 and if its
-    // non-zero it will take val2
-    spidir_value_t values[] = { val1.value, val2.value };
-    spidir_builder_build_brcond(builder, c, next_block, next_block);
-
-    // setup the continuation
-    spidir_builder_set_block(builder, next_block);
-    spidir_value_t value = spidir_builder_build_phi(builder, val1.type, 2, values, NULL);
-
-    // and push it
+    spidir_value_t value = spidir_builder_build_select(builder, c, val1.value, val2.value);
     JIT_PUSH(val1.type, value);
 
 cleanup:
