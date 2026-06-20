@@ -18,6 +18,7 @@
 #include "wasm/error.h"
 #include "wasm/host.h"
 #include <stdint.h>
+#include <cpuid.h>
 
 #include "util/hmap.h"
 #include "wasm/wasm.h"
@@ -30,12 +31,22 @@ static wasm_err_t jit_build_state_init(
     void* jit_code, hmap_t* code_map
 );
 
-static void wasm_jit_init(void) {
-    spidir_x64_machine_config_t machine_config = {
-        .extern_code_model = SPIDIR_X64_CM_LARGE_ABS,
-        .internal_code_model = SPIDIR_X64_CM_SMALL_PIC,
-    };
-    g_spidir_machine = spidir_codegen_create_x64_machine_with_config(&machine_config);
+static void wasm_jit_init(wasm_jit_config_t* config) {
+    if (config->machine_handle == nullptr) {
+        spidir_x64_machine_config_t machine_config = {
+            .extern_code_model = SPIDIR_X64_CM_LARGE_ABS,
+            .internal_code_model = SPIDIR_X64_CM_SMALL_PIC,
+        };
+
+        // check for current cpu features by default
+        unsigned int eax, ebx, ecx, edx;
+        if (__get_cpuid(1, &eax, &ebx, &ecx, &edx)) {
+            machine_config.cpu_features.popcnt = ecx & bit_POPCNT;
+        }
+
+        config->machine_handle = spidir_codegen_create_x64_machine_with_config(&machine_config);
+    }
+    g_spidir_machine = config->machine_handle;
 }
 
 void wasm_module_jit_free(wasm_module_jit_t* jit) {
@@ -176,7 +187,7 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
 
     // TODO: non-lazy init or something
     if (g_spidir_machine == nullptr) {
-        wasm_jit_init();
+        wasm_jit_init(config);
     }
 
     // Whether we're populating jit->debug. Off by default — capturing per-

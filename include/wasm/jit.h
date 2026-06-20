@@ -8,6 +8,11 @@
 
 typedef struct wasm_jit_config {
     /**
+     * The codegen machine handle for the target arch
+     */
+    spidir_codegen_machine_handle_t machine_handle;
+
+    /**
      * For dumping the spidir module, can be set to
      * null to not dump it at all
      */

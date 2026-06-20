@@ -16,6 +16,7 @@
 
 #include "gdb_jit.h"
 #include "runtime.h"
+#include "spidir/x64.h"
 
 // --- spidir logging glue -------------------------------------------------
 
