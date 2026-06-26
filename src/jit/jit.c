@@ -25,12 +25,6 @@
 
 static spidir_codegen_machine_handle_t g_spidir_machine = nullptr;
 
-typedef union code_map_entry code_map_entry_t;
-static wasm_err_t jit_build_state_init(
-    jit_context_t* ctx, wasm_module_jit_t* jit,
-    void* jit_code, hmap_t* code_map
-);
-
 static void wasm_jit_init(wasm_jit_config_t* config) {
     if (config->machine_handle == nullptr) {
         spidir_x64_machine_config_t machine_config = {
@@ -66,6 +60,30 @@ void wasm_module_jit_free(wasm_module_jit_t* jit) {
     jit->debug.relocs_count = 0;
 }
 
+static wasm_err_t jit_prepare_table(jit_context_t* ctx, uint32_t id) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    // generate a name for the table
+    char name[64];
+    name[0] = 't';
+    name[1] = 'a';
+    name[2] = 'b';
+    name[3] = 'l';
+    name[4] = 'e';
+    name[5] = '_';
+    int digits = u64toa(id, &name[6]);
+    name[6 + digits] = '\0';
+
+    // create it as a relocation
+    // TODO: when we support expanding tables we will need to do something 
+    //       about it
+    ctx->tables[id].global = spidir_module_create_extern_global(ctx->spidir, name);
+    ctx->tables[id].length = ctx->module->tables[id].min;
+
+cleanup:
+    return err;
+}
+
 static wasm_err_t jit_emit_spidir(jit_context_t* ctx) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -77,6 +95,11 @@ static wasm_err_t jit_emit_spidir(jit_context_t* ctx) {
             RETHROW(jit_prepare_function(ctx, export->index));
         }
     }
+
+    // prepare the tables
+    for (int i = 0; i < ctx->module->tables_count; i++) {
+        RETHROW(jit_prepare_table(ctx, i));
+    } 
 
     // Anything referenced by an elem segment is also reachable through
     // call_indirect at runtime so it must be prepared and queued for
@@ -182,6 +205,56 @@ cleanup:
     return err;
 }
 
+static wasm_err_t jit_build_state_init(jit_context_t* ctx, wasm_module_jit_t* jit) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    if (jit->state_size == 0) {
+        goto cleanup;
+    }
+
+    jit->state_init = wasm_host_calloc(1, jit->state_size);
+    CHECK(jit->state_init != nullptr);
+
+    //
+    // lay out the global values
+    //
+
+    for (int64_t i = 0; i < ctx->module->globals_count; i++) {
+        wasm_global_t* global = &ctx->module->globals[i];
+        if (!global->mutable) continue;
+        jit_global_t* jit_global = &ctx->globals[i];
+
+        void* data = jit->state_init + jit_global->offset;
+        switch (global->value.kind) {
+            case WASM_VALUE_TYPE_F32: POKE(float, data) = global->value.value.f32; break;
+            case WASM_VALUE_TYPE_F64: POKE(double, data) = global->value.value.f64; break;
+            case WASM_VALUE_TYPE_I32: POKE(int32_t, data) = global->value.value.i32; break;
+            case WASM_VALUE_TYPE_I64: POKE(int64_t, data) = global->value.value.i64; break;
+            default: CHECK_FAIL();
+        }
+    }
+
+    //
+    // lay out data entries
+    //
+
+    for (int64_t i = 0; i < ctx->module->data_count; i++) {
+        wasm_data_t* data = &ctx->module->data[i];
+        if (!data->active) {
+            jit_data_t* jit_data = &ctx->data[i];
+
+            // TODO: make them be their own allocation maybe? how should memory management 
+            //       for these work? do we even really need it to be deallocated on 
+            //       data.drop?
+            void** data_ptr = jit->state_init + jit_data->offset;
+            *data_ptr = ctx->module->data[i].data;
+        }
+    }
+
+cleanup:
+    return err;
+}
+
 static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm_jit_config_t* config) {
     wasm_err_t err = WASM_NO_ERROR;
 
@@ -207,6 +280,7 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
     // maps
     hmap_t code_map = HMAP_INIT;
     hmap_t import_map = HMAP_INIT;
+    hmap_t global_map = HMAP_INIT;
 
     // Reverse maps: spidir function id → wasm funcidx. Only populated when
     // capture_debug is on, so the relocations vec can name a wasm-level
@@ -302,6 +376,21 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
             .rodata_offset = rodata_offset,
         };
         hmap_insert(&code_map, func.id, entry.value);
+    }
+    
+    // lay out the tables in memory, tables are read-only right now and 
+    // only contain functions, so we can just add them to the rodata
+    for (int i = 0; i < ctx->module->tables_count; i++) {
+        jit_table_t* table = &ctx->tables[i];
+        if (!table->used) {
+            continue;
+        }
+
+        rodata_size = ALIGN_UP(rodata_size, _Alignof(void*));
+        size_t offset = rodata_size;
+        rodata_size += sizeof(void*) * table->length;
+
+        hmap_insert(&global_map, table->global.id, offset);
     }
 
     size_t code_size_orig = code_size;
@@ -404,9 +493,15 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
             spidir_libcall_kind_t dbg_target_libcall = 0;
 
             switch (reloc->target_kind) {
-                case SPIDIR_RELOC_TARGET_CONSTPOOL:
+                case SPIDIR_RELOC_TARGET_CONSTPOOL: {
                     target = jit_rodata + const_pool_offset;
-                    break;
+                } break;
+
+                case SPIDIR_RELOC_TARGET_GLOBAL: {
+                    uint64_t rodata_offset;
+                    CHECK(hmap_lookup(&global_map, reloc->target.global.id, &rodata_offset));
+                    target = jit_rodata + rodata_offset;
+                } break;
 
                 case SPIDIR_RELOC_TARGET_INTERNAL_FUNCTION: {
                     // get the callee entry
@@ -428,7 +523,7 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
                     }
                 } break;
 
-                case SPIDIR_RELOC_TARGET_EXTERNAL_FUNCTION:
+                case SPIDIR_RELOC_TARGET_EXTERNAL_FUNCTION: {
                     // Externals are either a JIT helper or a wasm import;
                     // both come through this target kind.
                     target = jit_helper_lookup_address(ctx, reloc->target.external.id);
@@ -448,15 +543,15 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
                             dbg_target_funcidx = (uint32_t)import_funcidx;
                         }
                     }
-                    break;
+                } break;
 
-                case SPIDIR_RELOC_TARGET_LIBCALL:
+                case SPIDIR_RELOC_TARGET_LIBCALL: {
                     target = jit_resolve_libcall(reloc->target.libcall);
                     CHECK(target != NULL);
                     if (capture_debug) {
                         dbg_target_libcall = reloc->target.libcall;
                     }
-                    break;
+                } break;
 
                 default:
                     CHECK_FAIL();
@@ -487,6 +582,39 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
                 };
                 vec_push(&debug_relocs, entry);
             }
+        }
+    }
+
+    //
+    // Fill in the tables in the rodata, we do that from the element segment, we need
+    // to do that after all the functions were created and before we lock the RX region,
+    // because this will add endbrs to all the functions that need it
+    //
+    for (int64_t i = 0; i < ctx->module->elems_count; i++) {
+        wasm_elem_segment_t* elem = &ctx->module->elems[i];
+        CHECK(elem->tableidx < ctx->module->tables_count);
+        jit_table_t* table = &ctx->tables[elem->tableidx];
+        if (!table->used) {
+            continue;
+        }
+        
+        // get the rodata offset from the global
+        uint64_t rodata_offset = -1;
+        CHECK(hmap_lookup(&global_map, table->global.id, &rodata_offset));
+
+        // segment must fit within the table's reserved range
+        size_t end_slot;
+        CHECK(!__builtin_add_overflow((size_t)elem->offset, (size_t)elem->funcs_count, &end_slot));
+        CHECK(end_slot <= table->length);
+
+        // lay out all of the functions in the elements
+        void** slots = jit_rodata + rodata_offset;
+        for (int64_t j = 0; j < elem->funcs_count; j++) {
+            RETHROW(jit_get_function_addr(
+                elem->funcs[j], ctx, 
+                jit_code, &code_map, 
+                &slots[elem->offset + j]
+            ));
         }
     }
 
@@ -525,12 +653,6 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
         }
     }
 
-    // build the runtime state initializer now that every internal
-    // function has a resolved address. This also writes the endbr64
-    // entries via jit_get_indirect, so it must run before we lock the
-    // RX region below.
-    RETHROW(jit_build_state_init(ctx, jit, jit_code, &code_map));
-
     // save the entry function
     if (ctx->module->start_func >= 0) {
         void* entry = nullptr;
@@ -541,6 +663,9 @@ static wasm_err_t jit_emit_code(jit_context_t* ctx, wasm_module_jit_t* jit, wasm
     // we are finished with jitting, we can lock the region and
     // let everything use it
     CHECK(wasm_host_jit_lock(jit->binary, jit->rx_page_count, jit->ro_page_count));
+
+    // build the runtime state initializer
+    RETHROW(jit_build_state_init(ctx, jit));
 
 cleanup:
     // free the global stuff
@@ -556,6 +681,7 @@ cleanup:
     vec_free(&functions);
     vec_free(&debug_relocs);
     hmap_free(&code_map);
+    hmap_free(&global_map);
     hmap_free(&import_map);
     hmap_free(&func_to_idx);
     hmap_free(&extern_to_idx);
@@ -563,17 +689,10 @@ cleanup:
     return err;
 }
 
-// Lays out the runtime state buffer: globals first (mutable globals get a
-// slot, immutables stay constants in the IR), then funcref tables packed
-// onto the end. The combined size is exposed as wasm_module_jit_t::state_size.
 static wasm_err_t jit_prepare_state(jit_context_t* ctx, wasm_module_jit_t* jit) {
     wasm_err_t err = WASM_NO_ERROR;
 
     size_t offset = 0;
-
-    //
-    // Layout globals
-    //
 
     if (ctx->module->globals_count != 0) {
         ctx->globals = CALLOC(jit_global_t, ctx->module->globals_count);
@@ -591,26 +710,6 @@ static wasm_err_t jit_prepare_state(jit_context_t* ctx, wasm_module_jit_t* jit) 
                 // immutable, not going to be allocated, mark it as such
                 ctx->globals[i].offset = -1;
             }
-        }
-    }
-
-    //
-    // Layout tables
-    // TODO: move into the rodata instead
-    //
-
-    if (ctx->module->tables_count != 0) {
-        ctx->tables = CALLOC(jit_table_t, ctx->module->tables_count);
-        CHECK(ctx->tables != nullptr);
-        for (int64_t i = 0; i < ctx->module->tables_count; i++) {
-            wasm_table_t* table = &ctx->module->tables[i];
-            offset = ALIGN_UP(offset, sizeof(void*));
-            ctx->tables[i].offset = offset;
-            ctx->tables[i].length = table->min;
-
-            size_t bytes;
-            CHECK(!__builtin_mul_overflow((size_t)table->min, sizeof(void*), &bytes));
-            CHECK(!__builtin_add_overflow(offset, bytes, &offset));
         }
     }
 
@@ -641,78 +740,6 @@ cleanup:
     return err;
 }
 
-static wasm_err_t jit_build_state_init(jit_context_t* ctx, wasm_module_jit_t* jit, void* jit_code, hmap_t* code_map) {
-    wasm_err_t err = WASM_NO_ERROR;
-
-    if (jit->state_size == 0) {
-        goto cleanup;
-    }
-
-    jit->state_init = wasm_host_calloc(1, jit->state_size);
-    CHECK(jit->state_init != nullptr);
-
-    //
-    // lay out the global values
-    //
-
-    for (int64_t i = 0; i < ctx->module->globals_count; i++) {
-        wasm_global_t* global = &ctx->module->globals[i];
-        if (!global->mutable) continue;
-        jit_global_t* jit_global = &ctx->globals[i];
-
-        void* data = jit->state_init + jit_global->offset;
-        switch (global->value.kind) {
-            case WASM_VALUE_TYPE_F32: POKE(float, data) = global->value.value.f32; break;
-            case WASM_VALUE_TYPE_F64: POKE(double, data) = global->value.value.f64; break;
-            case WASM_VALUE_TYPE_I32: POKE(int32_t, data) = global->value.value.i32; break;
-            case WASM_VALUE_TYPE_I64: POKE(int64_t, data) = global->value.value.i64; break;
-            default: CHECK_FAIL();
-        }
-    }
-
-    //
-    // lay out the table content
-    //
-
-    for (int64_t i = 0; i < ctx->module->elems_count; i++) {
-        wasm_elem_segment_t* elem = &ctx->module->elems[i];
-        CHECK(elem->tableidx < ctx->module->tables_count);
-        jit_table_t* table = &ctx->tables[elem->tableidx];
-
-        // segment must fit within the table's reserved range
-        size_t end_slot;
-        CHECK(!__builtin_add_overflow((size_t)elem->offset, (size_t)elem->funcs_count, &end_slot));
-        CHECK(end_slot <= table->length);
-
-        // lay out all of the functions in the elements
-        for (int64_t j = 0; j < elem->funcs_count; j++) {
-            void** slots = jit->state_init + table->offset;
-            RETHROW(jit_get_function_addr(elem->funcs[j], ctx, jit_code, code_map, &slots[elem->offset + j]));
-        }
-    }
-
-    //
-    // lay out data entries
-    //
-
-    for (int64_t i = 0; i < ctx->module->data_count; i++) {
-        wasm_data_t* data = &ctx->module->data[i];
-        if (!data->active) {
-            jit_data_t* jit_data = &ctx->data[i];
-
-            // TODO: make them be their own allocation maybe? how should memory management 
-            //       for these work? do we even really need it to be deallocated on 
-            //       data.drop?
-            void** data_ptr = jit->state_init + jit_data->offset;
-            *data_ptr = ctx->module->data[i].data;
-        }
-    }
-
-cleanup:
-    return err;
-}
-
-
 
 wasm_err_t wasm_module_jit(wasm_module_t* module, wasm_module_jit_t* jit, wasm_jit_config_t* config) {
     wasm_err_t err = WASM_NO_ERROR;
@@ -732,6 +759,9 @@ wasm_err_t wasm_module_jit(wasm_module_t* module, wasm_module_jit_t* jit, wasm_j
     // it should be cheap enough to allocate it linearly
     ctx.functions = CALLOC(jit_function_t, module->functions_count + module->imports_count);
     CHECK(ctx.functions != nullptr);
+
+    ctx.tables = CALLOC(jit_table_t, module->tables_count);
+    CHECK(ctx.tables != nullptr);
 
     // setup the runtime state buffer (globals + tables)
     RETHROW(jit_prepare_state(&ctx, jit));

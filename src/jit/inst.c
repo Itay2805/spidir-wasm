@@ -577,6 +577,9 @@ static wasm_err_t jit_wasm_call_indirect(spidir_builder_handle_t builder, buffer
     wasm_type_t* type = &ctx->module->types[typeidx];
     jit_table_t* table = &ctx->tables[tableidx];
 
+    // mark as used so we know to include it
+    table->used = true;
+
     // pop the table index
     spidir_value_t idx = JIT_POP(SPIDIR_TYPE_I32);
 
@@ -598,13 +601,12 @@ static wasm_err_t jit_wasm_call_indirect(spidir_builder_handle_t builder, buffer
 
     // in-bounds path: compute &state_base[table.offset + idx*sizeof(void*)]
     spidir_builder_set_block(builder, ok_block);
-    spidir_value_t state_base = spidir_builder_build_param_ref(builder, 1);
+    spidir_value_t table_ptr = spidir_builder_build_globaladdr(builder, table->global);
+
     spidir_value_t idx64 = jit_emit_zext64(builder, idx);
-    spidir_value_t slot_byte_offset = spidir_builder_build_imul(builder, idx64, 
+    spidir_value_t slot_offset = spidir_builder_build_imul(builder, idx64, 
         spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, sizeof(void*)));
-    spidir_value_t total_offset = spidir_builder_build_iadd(builder, slot_byte_offset,
-        spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, table->offset));
-    spidir_value_t slot_ptr = spidir_builder_build_ptroff(builder, state_base, total_offset);
+    spidir_value_t slot_ptr = spidir_builder_build_ptroff(builder, table_ptr, slot_offset);
 
     // load the funcref (a host-pointer-sized value)
     spidir_value_t target = spidir_builder_build_load(
@@ -613,7 +615,9 @@ static wasm_err_t jit_wasm_call_indirect(spidir_builder_handle_t builder, buffer
         slot_ptr
     );
 
-    // build the params: hidden mem/state passthrough, then wasm args.
+    // build the params: 
+    // - hidden mem/state passthrough, 
+    // - wasm args.
     size_t arg_count = type->arg_types_count + 2;
     params = CALLOC(spidir_value_t, arg_count);
     CHECK(params != nullptr);
@@ -623,7 +627,7 @@ static wasm_err_t jit_wasm_call_indirect(spidir_builder_handle_t builder, buffer
     arg_types[0] = SPIDIR_TYPE_PTR;
     arg_types[1] = SPIDIR_TYPE_PTR;
     params[0] = spidir_builder_build_param_ref(builder, 0);
-    params[1] = state_base;
+    params[1] = spidir_builder_build_param_ref(builder, 1);
 
     for (int i = 0; i < type->arg_types_count; i++) {
         size_t ai = type->arg_types_count - i - 1;

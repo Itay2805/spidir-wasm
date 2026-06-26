@@ -20,8 +20,9 @@ typedef struct jit_global {
 } jit_global_t;
 
 typedef struct jit_table {
-    size_t offset;
+    spidir_extern_global_t global;
     uint32_t length;
+    bool used;
 } jit_table_t;
 
 typedef struct jit_data {
