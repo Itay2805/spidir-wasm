@@ -638,6 +638,7 @@ static wasm_err_t wasm_parse_code_section(wasm_module_t* module, buffer_t* buffe
         CHECK(data != nullptr);
 
         code->code = wasm_host_calloc(1, code->length);
+        CHECK(code->code != nullptr);
         memcpy(code->code, data, code->length);
     }
 
@@ -799,6 +800,12 @@ wasm_err_t wasm_load_module(wasm_module_t* module, void* data, size_t size) {
                 CHECK_FAIL("wasm: unknown section %d", section.id);
             } break;
         }
+    }
+
+    // if we have functions we must have 
+    // a code section as well
+    if (module->functions_count > 0) {
+        CHECK(module->code != nullptr);
     }
 
 cleanup:
