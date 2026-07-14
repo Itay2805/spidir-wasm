@@ -140,9 +140,10 @@ static int find_section_index(wasm_section_id_t id, int index) {
 
 static wasm_err_t wasm_pull_result_type(buffer_t* buffer, wasm_value_type_t** out_types, uint32_t* out_count) {
     wasm_err_t err = WASM_NO_ERROR;
+    wasm_value_type_t* types = nullptr;
 
     uint32_t count = BUFFER_PULL_U32(buffer);
-    wasm_value_type_t* types = CALLOC(wasm_value_type_t, count);
+    types = CALLOC(wasm_value_type_t, count);
     CHECK(types != nullptr);
     *out_count = count;
 
@@ -172,20 +173,18 @@ static wasm_err_t wasm_parse_type_section(wasm_module_t* module, buffer_t* buffe
 
     for (int i = 0; i < type_count; i++) {
         uint8_t type = BUFFER_PULL(uint8_t, buffer);
-        wasm_type_t wasm_type = {};
+        wasm_type_t* wasm_type = &module->types[i];
 
         switch (type) {
             case 0x60: {
-                RETHROW(wasm_pull_result_type(buffer, &wasm_type.arg_types, &wasm_type.arg_types_count));
-                RETHROW(wasm_pull_result_type(buffer, &wasm_type.result_types, &wasm_type.result_types_count));
+                RETHROW(wasm_pull_result_type(buffer, &wasm_type->arg_types, &wasm_type->arg_types_count));
+                RETHROW(wasm_pull_result_type(buffer, &wasm_type->result_types, &wasm_type->result_types_count));
             } break;
 
             default: {
                 CHECK_FAIL("Unknown type %x", type);
             } break;
         }
-
-        module->types[i] = wasm_type;
     }
 
     CHECK(buffer->len == 0);
