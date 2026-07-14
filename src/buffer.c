@@ -130,14 +130,49 @@ cleanup:
     return err;
 }
 
+static bool is_valid_utf8(const unsigned char* str, size_t len) {
+    size_t i = 0;
+    while (i < len) {
+        if (str[i] <= 0x7F) {
+            // 1-byte ASCII (0xxxxxxx)
+            i += 1;
+        } else if ((str[i] & 0xE0) == 0xC0) {
+            // 2-byte sequence (110xxxxx 10xxxxxx)
+            if (i + 1 >= len || (str[i + 1] & 0xC0) != 0x80) return false;
+            // Reject overlong encodings (must be > 0x7F)
+            if ((str[i] & 0x1F) < 0x02) return false; 
+            i += 2;
+        } else if ((str[i] & 0xF0) == 0xE0) {
+            // 3-byte sequence (1110xxxx 10xxxxxx 10xxxxxx)
+            if (i + 2 >= len || (str[i + 1] & 0xC0) != 0x80 || (str[i + 2] & 0xC0) != 0x80) return false;
+            
+            // Check overlong and UTF-16 surrogates
+            unsigned int cp = ((str[i] & 0x0F) << 12) | ((str[i + 1] & 0x3F) << 6) | (str[i + 2] & 0x3F);
+            if (cp < 0x0800 || (cp >= 0xD800 && cp <= 0xDFFF)) return false;
+            i += 3;
+        } else if ((str[i] & 0xF8) == 0xF0) {
+            // 4-byte sequence (11110xxx 10xxxxxx 10xxxxxx 10xxxxxx)
+            if (i + 3 >= len || (str[i + 1] & 0xC0) != 0x80 || (str[i + 2] & 0xC0) != 0x80 || (str[i + 3] & 0xC0) != 0x80) return false;
+            
+            // Check overlong and out-of-bounds (> 0x10FFFF)
+            unsigned int cp = ((str[i] & 0x07) << 18) | ((str[i + 1] & 0x3F) << 12) | ((str[i + 2] & 0x3F) << 6) | (str[i + 3] & 0x3F);
+            if (cp < 0x010000 || cp > 0x10FFFF) return false;
+            i += 4;
+        } else {
+            // Invalid starting byte (e.g., loose continuation bytes or restricted 0xF5+)
+            return false;
+        }
+    }
+    return true;
+}
+
 wasm_err_t buffer_pull_name(buffer_t* buffer, buffer_t* name) {
     wasm_err_t err = WASM_NO_ERROR;
 
     name->len = BUFFER_PULL_U32(buffer);
     name->data = buffer_pull(buffer, name->len);
     CHECK(name->data != nullptr);
-
-    // TODO: verify utf8
+    CHECK(is_valid_utf8(name->data, name->len));
 
 cleanup:
     return err;
