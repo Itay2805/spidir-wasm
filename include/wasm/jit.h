@@ -56,6 +56,13 @@ typedef struct wasm_jit_func_layout {
     // into wasm_module.function_names, code, etc.
     uint32_t funcidx;
 
+    // Set when this entry is the CFI type-check thunk generated for
+    // `funcidx` rather than the function body itself. Thunks are real code
+    // in .text (tables point at them) but have no wasm-level identity of
+    // their own, so they share the wrapped function's funcidx and carry
+    // this flag instead.
+    bool cfi_thunk;
+
     // Address in the live JIT binary. Same value reachable through the export
     // table for exported functions; for non-exported functions this is the
     // only handle the host has.
@@ -103,6 +110,11 @@ typedef struct wasm_jit_reloc {
     // endbr64 not included).
     uint32_t target_funcidx;
 
+    // Set when the target is the CFI type-check thunk of target_funcidx
+    // rather than the function body itself (only possible for
+    // INTERNAL_FUNCTION targets — thunks are jitted code).
+    bool target_cfi;
+
     // The spidir libcall kind, valid only when target_kind == LIBCALL. Lets
     // the debug ELF name the symbol it synthesizes for the libcall.
     spidir_libcall_kind_t target_libcall;
@@ -113,7 +125,10 @@ typedef struct wasm_jit_reloc {
     // Owning function (the function whose code carries this relocation). We
     // keep this so the ELF emitter can attach the reloc to the right symbol /
     // section without a second pass to figure out the containing function.
+    // When the reloc lives inside a CFI thunk this is the wrapped function's
+    // funcidx with owner_cfi set.
     uint32_t owner_funcidx;
+    bool owner_cfi;
 } wasm_jit_reloc_t;
 
 typedef struct wasm_jit_debug_info {

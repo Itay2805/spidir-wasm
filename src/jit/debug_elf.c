@@ -25,18 +25,42 @@
 // bad name section doesn't produce an unreadable ELF (it would still be
 // parseable, just visually noisy). NULL/empty names fall back to a synthetic
 // label upstream — this helper only ever sees a non-empty name to encode.
-static wasm_err_t strtab_emit_str(buffer_t* strtab, const char* str, uint32_t* out_off) {
+static wasm_err_t strtab_emit_chars(buffer_t* strtab, const char* str) {
     wasm_err_t err = WASM_NO_ERROR;
-    *out_off = (uint32_t)strtab->len;
 
     // We emit byte-by-byte so we can rewrite anything outside the printable
-    // ASCII range as '?'. ELF strings are NUL-terminated so we always tack on
-    // a trailing 0.
+    // ASCII range as '?'.
     for (const char* p = str; *p != '\0'; p++) {
         uint8_t b = (uint8_t)*p;
         if (b < 0x20 || b == 0x7f) b = '?';
         RETHROW(buffer_push(strtab, &b, 1));
     }
+
+cleanup:
+    return err;
+}
+
+static wasm_err_t strtab_emit_str(buffer_t* strtab, const char* str, uint32_t* out_off) {
+    wasm_err_t err = WASM_NO_ERROR;
+    *out_off = (uint32_t)strtab->len;
+
+    // ELF strings are NUL-terminated so we always tack on a trailing 0.
+    RETHROW(strtab_emit_chars(strtab, str));
+    uint8_t zero = 0;
+    RETHROW(buffer_push(strtab, &zero, 1));
+
+cleanup:
+    return err;
+}
+
+// Same as strtab_emit_str but joins two parts into a single table entry —
+// lets us prefix a label (e.g. "cfi.") without allocating a joined buffer.
+static wasm_err_t strtab_emit_prefixed_str(buffer_t* strtab, const char* prefix, const char* str, uint32_t* out_off) {
+    wasm_err_t err = WASM_NO_ERROR;
+    *out_off = (uint32_t)strtab->len;
+
+    RETHROW(strtab_emit_chars(strtab, prefix));
+    RETHROW(strtab_emit_chars(strtab, str));
     uint8_t zero = 0;
     RETHROW(buffer_push(strtab, &zero, 1));
 
@@ -52,8 +76,11 @@ cleanup:
 // produced a symbol for this funcidx" (e.g. an unused import). Used to
 // translate relocations: a reloc whose target is funcidx N looks up
 // sym_for_funcidx[N] to find the symbol index to put in the rela entry.
+// The CFI type-check thunk of a function (when it has one) is separate code
+// with its own symbol, so it gets its own slot next to the primary one.
 typedef struct func_sym_slot {
     uint32_t sym_index;
+    uint32_t cfi_sym_index;
 } func_sym_slot_t;
 
 // Returns the friendliest name we can come up with for a wasm function.
@@ -291,7 +318,10 @@ wasm_err_t wasm_jit_emit_debug_elf(
     if (total_funcs != 0) {
         slots = wasm_host_calloc(total_funcs, sizeof(func_sym_slot_t));
         CHECK(slots != nullptr);
-        for (size_t i = 0; i < total_funcs; i++) slots[i].sym_index = UINT32_MAX;
+        for (size_t i = 0; i < total_funcs; i++) {
+            slots[i].sym_index = UINT32_MAX;
+            slots[i].cfi_sym_index = UINT32_MAX;
+        }
     }
 
     // sh_info on the symtab is "one greater than the symbol table index of
@@ -317,12 +347,14 @@ wasm_err_t wasm_jit_emit_debug_elf(
         // Walk the JIT debug.relocs to find the resolved host address for
         // this import. Only function targets carry a funcidx, and an import's
         // funcidx is < imports_count, so matching on funcidx alone is
-        // unambiguous. Imports without a recorded relocation simply weren't
+        // unambiguous — except for relocs against the import's CFI thunk,
+        // whose target is JIT code rather than the host function, so those
+        // are skipped. Imports without a recorded relocation simply weren't
         // referenced by any compiled function — emit them with value 0 so
         // the symbol still exists for tooling.
         uint64_t addr = 0;
         for (size_t r = 0; r < dbg->relocs_count; r++) {
-            if (dbg->relocs[r].target_funcidx == i) {
+            if (dbg->relocs[r].target_funcidx == i && !dbg->relocs[r].target_cfi) {
                 addr = (uint64_t)(uintptr_t)dbg->relocs[r].target_address;
                 break;
             }
@@ -333,7 +365,10 @@ wasm_err_t wasm_jit_emit_debug_elf(
     }
 
     // Internal functions: STT_FUNC pointing at .text. Use the per-function
-    // layout the JIT recorded so size is exact.
+    // layout the JIT recorded so size is exact. CFI type-check thunks share
+    // the wrapped function's funcidx but are distinct code — they get their
+    // own "cfi."-prefixed symbol and their own slot so relocations against
+    // the real function never resolve to the thunk (or vice versa).
     for (size_t i = 0; i < dbg->funcs_count; i++) {
         const wasm_jit_func_layout_t* fl = &dbg->funcs[i];
 
@@ -342,9 +377,14 @@ wasm_err_t wasm_jit_emit_debug_elf(
         RETHROW(make_func_label(module, fl->funcidx, &label));
 
         uint32_t off;
-        RETHROW(strtab_emit_str(&strtab, label, &off));
-
-        slots[fl->funcidx].sym_index = (uint32_t)(symtab.len / sizeof(Elf64_Sym));
+        uint32_t sym_index = (uint32_t)(symtab.len / sizeof(Elf64_Sym));
+        if (fl->cfi_thunk) {
+            RETHROW(strtab_emit_prefixed_str(&strtab, "cfi.", label, &off));
+            slots[fl->funcidx].cfi_sym_index = sym_index;
+        } else {
+            RETHROW(strtab_emit_str(&strtab, label, &off));
+            slots[fl->funcidx].sym_index = sym_index;
+        }
         PUSH_SYM(off, ELF64_ST_INFO(STB_GLOBAL, STT_FUNC), 0,
                  shidx_text, (uint64_t)fl->address, (uint64_t)fl->code_size);
     }
@@ -429,22 +469,41 @@ wasm_err_t wasm_jit_emit_debug_elf(
 
             switch (r->target_kind) {
                 case SPIDIR_RELOC_TARGET_INTERNAL_FUNCTION:
-                case SPIDIR_RELOC_TARGET_EXTERNAL_FUNCTION:
+                case SPIDIR_RELOC_TARGET_EXTERNAL_FUNCTION: {
                     // Internal funcs always, and imports, round-trip to a
-                    // funcidx we already emitted a symbol for. An external
+                    // funcidx we already emitted a symbol for (a CFI thunk
+                    // target uses the thunk's own symbol). An external
                     // function with no funcidx is a JIT helper — name it from
                     // its host address and synthesize.
+                    uint32_t slot_sym = UINT32_MAX;
                     if (r->target_funcidx != UINT32_MAX &&
-                        r->target_funcidx < total_funcs &&
-                        slots[r->target_funcidx].sym_index != UINT32_MAX) {
-                        sym_index = slots[r->target_funcidx].sym_index;
+                        r->target_funcidx < total_funcs) {
+                        slot_sym = r->target_cfi
+                            ? slots[r->target_funcidx].cfi_sym_index
+                            : slots[r->target_funcidx].sym_index;
+                    }
+                    if (slot_sym != UINT32_MAX) {
+                        sym_index = slot_sym;
+
+                        // The linked bytes may not point at the symbol's own
+                        // value — an ABS64 to an internal function resolves
+                        // to the endbr64 slot 4 bytes before the entry — so
+                        // fold the difference into the addend to keep
+                        // S + A equal to what the code really holds.
+                        const Elf64_Sym* sym = (const Elf64_Sym*)((uint8_t*)symtab.data
+                            + (size_t)sym_index * sizeof(Elf64_Sym));
+                        addend += (int64_t)((uint64_t)(uintptr_t)r->target_address
+                                            - sym->st_value);
                     } else {
                         synth = true;
                         synth_name = jit_get_helper_name(r->target_address);
                     }
-                    break;
+                } break;
 
                 case SPIDIR_RELOC_TARGET_CONSTPOOL:
+                case SPIDIR_RELOC_TARGET_GLOBAL:
+                    // Both live in .rodata (globals are only used for the
+                    // tables right now, which are laid out in rodata).
                     if (have_rodata) {
                         sym_index = sym_rodata_section;
                         // The addend should bring the section symbol up to the
