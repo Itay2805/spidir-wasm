@@ -5,3 +5,9 @@ __pycache__
 build
 artifacts
 compile_commands.json
+
+# libFuzzer crash/leak reproducers (written to cwd by ./build/fuzz)
+crash-*
+leak-*
+timeout-*
+oom-*

@@ -15,6 +15,9 @@ CFLAGS 			?=
 # Build the host tool
 HOST 			?= n
 
+# Build the libFuzzer entry point (host/fuzz.c -> build/fuzz)
+FUZZ 			?= n
+
 # Build with LLVM source-coverage instrumentation. Set indirectly via
 # `make coverage`; not intended for direct use.
 COVERAGE 		?=
@@ -55,6 +58,14 @@ cflags-y += -g
 # If we are compiling the host also add sanitizers
 cflags-$(HOST) += -fsanitize=undefined,address
 ldflags-$(HOST) += -fsanitize=undefined,address
+
+# For the fuzzer, instrument everything (libwasm + host glue) for coverage-guided
+# fuzzing and pull in asan/ubsan to turn latent corruption into hard failures.
+# `fuzzer-no-link` adds only the coverage instrumentation to each object; the
+# final link uses `fuzzer` to bring in the libFuzzer runtime (which supplies
+# main). Kept independent of HOST so the two binaries don't have to build together.
+cflags-$(FUZZ) += -fsanitize=fuzzer-no-link,undefined,address
+ldflags-$(FUZZ) += -fsanitize=fuzzer,undefined,address
 
 # LLVM source-based coverage. Applied to libwasm and the host so the
 # `coverage` target can show which JIT code is exercised by the tests.
