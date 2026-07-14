@@ -6,6 +6,7 @@
 #include "util/defs.h"
 #include "util/except.h"
 #include "wasm/host.h"
+#include "wasm/wasm.h"
 #include <stdint.h>
 
 typedef struct jit_build_ctx {
@@ -25,13 +26,8 @@ wasm_err_t jit_prepare_function(jit_context_t* ctx, uint32_t funcidx) {
         goto cleanup;
     }
 
-    typeidx_t typeidx;
-    if (funcidx < imports_count) {
-        typeidx = ctx->module->imports[funcidx].index;
-    } else {
-        typeidx = ctx->module->functions[funcidx - imports_count];
-    }
-    wasm_type_t* type = &ctx->module->types[typeidx];
+    wasm_type_t* type = wasm_get_func(ctx->module, funcidx);
+    CHECK(type != nullptr);
 
     // the ret type
     spidir_value_type_t ret_type = SPIDIR_TYPE_NONE;
@@ -42,9 +38,7 @@ wasm_err_t jit_prepare_function(jit_context_t* ctx, uint32_t funcidx) {
     }
 
     // the args, note that we add two hidden parameters which are the
-    // memory base and a combined state base (globals + tables, laid out
-    // sequentially by jit_prepare_state). Keeping these first means
-    // call_indirect can pass them through unchanged.
+    // memory base and a combined state base.
     size_t args_count = type->arg_types_count + 2;
     args = CALLOC(spidir_value_type_t, args_count);
     int ai = 0;

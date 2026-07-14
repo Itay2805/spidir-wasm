@@ -1,6 +1,7 @@
 #include "wasm/jit.h"
 
 #include "function.h"
+#include "jit/cfi.h"
 #include "jit/codegen.h"
 #include "jit/helpers.h"
 #include "jit_internal.h"
@@ -88,7 +89,12 @@ static wasm_err_t jit_emit_spidir(jit_context_t* ctx) {
     for (int i = 0; i < ctx->module->elems_count; i++) {
         wasm_elem_segment_t* elem = &ctx->module->elems[i];
         for (uint32_t j = 0; j < elem->funcs_count; j++) {
-            RETHROW(jit_prepare_function(ctx, elem->funcs[j]));
+            uint32_t funcidx = elem->funcs[j];
+            RETHROW(jit_prepare_function(ctx, funcidx));
+
+            // becase we use a go-indirect we need to actually generate 
+            // a cfi thunk that is used for the functype type-checking
+            RETHROW(jit_create_cfi_thunk(ctx, funcidx));
         }
     }
 

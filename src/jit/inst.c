@@ -1,6 +1,7 @@
 #include "inst.h"
 
 #include "function.h"
+#include "jit/cfi.h"
 #include "jit/helpers.h"
 #include "jit/jit_internal.h"
 #include "spidir/module.h"
@@ -41,12 +42,14 @@ void jit_free_label(jit_label_t* label) {
 // have unknown side effects, so spidir is forced to keep this path.
 // We still terminate the block with `unreachable` afterwards because
 // the helper is `noreturn` from our perspective.
-static wasm_err_t jit_emit_trap(spidir_builder_handle_t builder, jit_context_t* ctx) {
+wasm_err_t jit_emit_trap(spidir_builder_handle_t builder, jit_context_t* ctx) {
     wasm_err_t err = WASM_NO_ERROR;
+
     spidir_funcref_t trap;
     RETHROW(jit_get_helper(ctx, JIT_HELPER_TRAP, &trap));
     spidir_builder_build_call(builder, trap, 0, nullptr);
     spidir_builder_build_unreachable(builder);
+
 cleanup:
     return err;
 }
@@ -615,10 +618,13 @@ static wasm_err_t jit_wasm_call_indirect(spidir_builder_handle_t builder, buffer
         slot_ptr
     );
 
+    uint64_t callee_type_id = jit_cfi_get_type_id(ctx, type);
+
     // build the params: 
     // - hidden mem/state passthrough, 
+    // - hidden type id
     // - wasm args.
-    size_t arg_count = type->arg_types_count + 2;
+    size_t arg_count = type->arg_types_count + 3;
     params = CALLOC(spidir_value_t, arg_count);
     CHECK(params != nullptr);
     arg_types = CALLOC(spidir_value_type_t, arg_count);
@@ -626,14 +632,16 @@ static wasm_err_t jit_wasm_call_indirect(spidir_builder_handle_t builder, buffer
 
     arg_types[0] = SPIDIR_TYPE_PTR;
     arg_types[1] = SPIDIR_TYPE_PTR;
+    arg_types[2] = SPIDIR_TYPE_I64;
     params[0] = spidir_builder_build_param_ref(builder, 0);
     params[1] = spidir_builder_build_param_ref(builder, 1);
+    params[2] = spidir_builder_build_iconst(builder, SPIDIR_TYPE_I64, callee_type_id);
 
     for (int i = 0; i < type->arg_types_count; i++) {
         size_t ai = type->arg_types_count - i - 1;
         spidir_value_type_t stype = jit_get_spidir_value_type(type->arg_types[ai]);
-        params[ai + 2] = JIT_POP(stype);
-        arg_types[ai + 2] = stype;
+        params[ai + 3] = JIT_POP(stype);
+        arg_types[ai + 3] = stype;
     }
 
     spidir_value_type_t ret_type = SPIDIR_TYPE_NONE;

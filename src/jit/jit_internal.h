@@ -10,8 +10,10 @@
 
 typedef struct jit_function {
     spidir_funcref_t spidir;
+    spidir_function_t cfi_thunk;
     void* address;
     bool inited;
+    bool has_cfi;
 } jit_function_t;
 
 typedef struct jit_global {

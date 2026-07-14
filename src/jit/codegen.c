@@ -116,10 +116,32 @@ static void* jit_get_indirect(void* func) {
     return func;
 }
 
+static wasm_err_t jit_get_internal_function_addr(
+    wasm_module_jit_t* jit, 
+    jit_context_t* ctx, 
+    codegen_ctx_t* codegen, 
+    spidir_function_t function,
+    void** out_addr
+) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    // get the entry
+    uint64_t index;
+    CHECK(hmap_lookup(&codegen->func_to_idx, function.id, &index));
+    function_codegen_t* func = &codegen->functions.elements[index];
+
+    // add the exported function as an indirect target
+    *out_addr = jit_get_indirect(jit->binary + func->code_offset);
+    
+cleanup:
+    return err;
+}
+
 static wasm_err_t jit_get_function_addr(
     uint32_t funcidx, 
     wasm_module_jit_t* jit,
-    jit_context_t* ctx, codegen_ctx_t* codegen, 
+    jit_context_t* ctx, 
+    codegen_ctx_t* codegen, 
     void** out_addr
 ) {
     wasm_err_t err = WASM_NO_ERROR;
@@ -131,13 +153,12 @@ static wasm_err_t jit_get_function_addr(
         *out_addr = ctx->functions[funcidx].address;
 
     } else if (spidir_funcref_is_internal(funcref)) {
-        // get the entry
-        uint64_t index;
-        CHECK(hmap_lookup(&codegen->func_to_idx, spidir_funcref_get_internal(funcref).id, &index));
-        function_codegen_t* func = &codegen->functions.elements[index];
-
-        // add the exported function as an indirect target
-        *out_addr = jit_get_indirect(jit->binary + func->code_offset);
+        RETHROW(jit_get_internal_function_addr(
+            jit, ctx, codegen, 
+            spidir_funcref_get_internal(funcref), 
+            out_addr
+        ));
+        
     } else {
         CHECK_FAIL();
     }
@@ -337,7 +358,18 @@ static wasm_err_t jit_codegen_fill_tables(wasm_module_jit_t* jit, jit_context_t*
         // lay out all of the functions in the elements
         void** slots = jit->binary + codegen->code_size + rodata_offset;
         for (int64_t j = 0; j < elem->funcs_count; j++) {
-            RETHROW(jit_get_function_addr(elem->funcs[j], jit, ctx, codegen, &slots[elem->offset + j]));
+            jit_function_t* function = &ctx->functions[elem->funcs[j]];
+
+            // we want to use the CFI thunk for tables, since they use 
+            // the call_indirect in wasm
+            void* address;
+            CHECK(function->has_cfi);
+            RETHROW(jit_get_internal_function_addr(
+                jit, ctx, codegen, 
+                function->cfi_thunk,
+                &address
+            ));
+            slots[elem->offset + j] = address;
         }
     }
 
@@ -424,6 +456,11 @@ static wasm_err_t jit_try_codegen_function(jit_context_t* ctx, codegen_ctx_t* co
 
     if (spidir_funcref_is_internal(func->spidir)) {
         RETHROW(jit_codegen_function(ctx, codegen, spidir_funcref_get_internal(func->spidir)));
+    }
+
+    // if it has a cfi stub then code gen it as well
+    if (func->has_cfi) {
+        RETHROW(jit_codegen_function(ctx, codegen, func->cfi_thunk));
     }
 
 cleanup:

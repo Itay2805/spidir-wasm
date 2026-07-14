@@ -1,5 +1,6 @@
 libs-y += libwasm
 
+libwasm-y += src/jit/cfi.c
 libwasm-y += src/jit/codegen.c
 libwasm-y += src/jit/debug_elf.c
 libwasm-y += src/jit/function.c
