@@ -11,3 +11,4 @@ crash-*
 leak-*
 timeout-*
 oom-*
+slow-unit-*

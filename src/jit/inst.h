@@ -38,6 +38,12 @@ typedef struct jit_label {
     // did we terminate the block yet
     bool terminated;
 
+    // Depth of structured control (block/loop/if) opened *after* this frame was
+    // terminated, i.e. while walking its unreachable code. Only meaningful when
+    // `terminated`. The `end` that brings this back to 0 is the one that closes
+    // the terminated frame itself; deeper ones just close dead nested blocks.
+    uint32_t unreachable_depth;
+
     // if the label has a result type this will be non-null, 
     // behaves the same as local_phis/local_values
     spidir_value_type_t result_type;

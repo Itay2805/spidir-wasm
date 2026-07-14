@@ -1948,8 +1948,10 @@ static wasm_err_t jit_wasm_end(spidir_builder_handle_t builder, buffer_t* code, 
     spidir_value_type_t push_type = SPIDIR_TYPE_NONE;
     spidir_value_t push_value = SPIDIR_VALUE_INVALID;
 
-    // set when a terminated loop's continuation is unreachable, so the enclosing
-    // label must be marked terminated too (its fallthrough can't be reached).
+    // set when this label's continuation turns out to be unreachable (a loop
+    // that only exits via inner branches, or a terminated block that nothing
+    // branches to), so the enclosing label must be marked terminated too — its
+    // fallthrough can't be reached.
     bool propagate_terminated = false;
 
     if (func->labels.length == 1) {
@@ -1978,21 +1980,34 @@ static wasm_err_t jit_wasm_end(spidir_builder_handle_t builder, buffer_t* code, 
             spidir_builder_build_branch(builder, label->block);
         }
 
-        // copy over all the locals, if we never initialized them
-        // we stay with the current locals which is correct
-        for (int i = 0; i < func->locals.length; i++) {
-            func->locals.elements[i].value = label->locals_values[i];
-        }
+        // locals_values is allocated lazily by the first prepare_branch into
+        // this label (the fallthrough above, or any inner `br` to it). If it's
+        // still null, nothing reaches the continuation: the block was terminated
+        // *and* no branch targeted it, so label->block has no predecessors and
+        // is dead code. Mirror the loop case — terminate the empty block and
+        // mark the enclosing label unreachable — rather than dereferencing the
+        // null locals array.
+        if (label->locals_values == nullptr) {
+            spidir_builder_set_block(builder, label->block);
+            spidir_builder_build_unreachable(builder);
+            propagate_terminated = true;
+        } else {
+            // copy over all the locals from the merge
+            for (int i = 0; i < func->locals.length; i++) {
+                func->locals.elements[i].value = label->locals_values[i];
+            }
 
-        // and use the new block
-        spidir_builder_set_block(builder, label->block);
+            // and use the new block
+            spidir_builder_set_block(builder, label->block);
 
-        // the merged result (a plain value or result_phi) lives in label->block
-        // and dominates the continuation, so hand it to the enclosing label
-        if (label->result_type != SPIDIR_TYPE_NONE) {
-            push_result = true;
-            push_type = label->result_type;
-            push_value = label->result_value;
+            // the merged result (a plain value or result_phi) lives in
+            // label->block and dominates the continuation, so hand it to the
+            // enclosing label
+            if (label->result_type != SPIDIR_TYPE_NONE) {
+                push_result = true;
+                push_type = label->result_type;
+                push_value = label->result_value;
+            }
         }
     } else {
         spidir_block_t next_block = spidir_builder_create_block(builder);
@@ -2046,10 +2061,145 @@ static wasm_err_t jit_wasm_end(spidir_builder_handle_t builder, buffer_t* code, 
         vec_push(&parent->stack, v);
     }
 
-    // the code right after an unconditionally-looping loop is unreachable
+    // the code right after a label whose continuation is unreachable is dead
     if (propagate_terminated) {
         jit_label_t* parent = &vec_last(&func->labels);
         parent->terminated = true;
+    }
+
+cleanup:
+    return err;
+}
+
+static wasm_err_t jit_skip_leb(buffer_t* code) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    uint8_t byte;
+    do {
+        byte = BUFFER_PULL(uint8_t, code);
+    } while (byte & 0x80);
+
+cleanup:
+    return err;
+}
+
+static wasm_err_t jit_skip_unreachable(
+    spidir_builder_handle_t builder, buffer_t* code, jit_context_t* ctx,
+    jit_function_ctx_t* func, jit_label_t* label, uint8_t opcode
+) {
+    wasm_err_t err = WASM_NO_ERROR;
+
+    switch (opcode) {
+        // Structured control: each opens a nested frame that is itself entirely
+        // unreachable. Count the nesting so we know which `end` closes us.
+        case 0x02:   // block
+        case 0x03:   // loop
+        case 0x04: { // if
+            spidir_value_type_t ignored_type;
+            RETHROW(jit_wasm_pull_block_type(code, &ignored_type));
+            label->unreachable_depth++;
+        } break;
+
+        // `else` splits an if; it neither opens nor closes a frame. if/else is
+        // unimplemented, so a depth-0 else can't occur for a module we accept —
+        // treat it as a no-op that keeps skipping.
+        case 0x05: break;
+
+        // `end` closes the innermost dead nested block; when none are left it
+        // closes the terminated frame itself, which the real handler finishes
+        // (restore the enclosing block, pop the label, propagate the result).
+        case 0x0B:
+            if (label->unreachable_depth == 0) {
+                RETHROW(jit_wasm_end(builder, code, ctx, func, label));
+            } else {
+                label->unreachable_depth--;
+            }
+            break;
+
+        // Single LEB immediate (label / func / local / global index, or an
+        // i32/i64 const — jit_skip_leb is value-agnostic so it covers both).
+        case 0x0C:          // br
+        case 0x0D:          // br_if
+        case 0x10:          // call
+        case 0x20 ... 0x24: // local.get/set/tee, global.get/set
+        case 0x41:          // i32.const
+        case 0x42:          // i64.const
+            RETHROW(jit_skip_leb(code));
+            break;
+
+        // br_table: a vector of label indices followed by the default.
+        case 0x0E: {
+            uint32_t count = BUFFER_PULL_U32(code);
+            for (uint32_t i = 0; i <= count; i++) {
+                RETHROW(jit_skip_leb(code));
+            }
+        } break;
+
+        // call_indirect: typeidx + tableidx.
+        case 0x11:
+            RETHROW(jit_skip_leb(code));
+            RETHROW(jit_skip_leb(code));
+            break;
+
+        // memarg-carrying memory access (align/offset, incl. the multi-memory
+        // index quirk that jit_pull_memarg handles).
+        case 0x28 ... 0x3E: { // loads / stores
+            wasm_mem_arg_t ignored_arg;
+            RETHROW(jit_pull_memarg(code, &ignored_arg));
+        } break;
+
+        // memidx byte.
+        case 0x3F: // memory.size
+        case 0x40: // memory.grow
+            BUFFER_PULL(uint8_t, code);
+            break;
+
+        // Fixed-width float constants.
+        case 0x43: CHECK(buffer_pull(code, 4) != nullptr); break; // f32.const
+        case 0x44: CHECK(buffer_pull(code, 8) != nullptr); break; // f64.const
+
+        // No immediates: unreachable/nop/return/drop/select and the whole
+        // numeric/comparison/conversion range.
+        case 0x00:
+        case 0x01:
+        case 0x0F:
+        case 0x1A:
+        case 0x1B:
+        case 0x45 ... 0xC4:
+            break;
+
+        // Bulk-memory prefix — immediates mirror jit_wasm_fc_prefix.
+        case 0xFC: {
+            uint32_t sub = BUFFER_PULL_U32(code);
+            switch (sub) {
+                case 0 ... 7: break;                                    // trunc_sat: none
+                case 8:                                                 // memory.init
+                    RETHROW(jit_skip_leb(code));                        //   dataidx
+                    CHECK(buffer_pull(code, 1) != nullptr);            //   memidx
+                    break;
+                case 9: RETHROW(jit_skip_leb(code)); break;             // data.drop: dataidx
+                case 10: CHECK(buffer_pull(code, 2) != nullptr); break; // memory.copy: 2 memidx
+                case 11: CHECK(buffer_pull(code, 1) != nullptr); break; // memory.fill: memidx
+                default: CHECK_FAIL("unsupported bulk-memory sub-opcode %x in unreachable code", sub);
+            }
+        } break;
+
+        // Atomics prefix — every implemented sub carries a memarg.
+        case 0xFE: {
+            uint32_t sub = BUFFER_PULL_U32(code);
+            switch (sub) {
+                case 0x00:          // memory.atomic.notify
+                case 0x01 ... 0x02: // memory.atomic.wait32/64
+                case 0x10 ... 0x4E: { // atomic load/store/rmw/cmpxchg
+                    wasm_mem_arg_t ignored_arg;
+                    RETHROW(jit_pull_memarg(code, &ignored_arg));
+                } break;
+                default: CHECK_FAIL("unsupported atomic sub-opcode %x in unreachable code", sub);
+            }
+        } break;
+
+        default:
+            CHECK_FAIL("Unknown opcode 0x%x in unreachable code", opcode);
     }
 
 cleanup:
@@ -2060,6 +2210,15 @@ wasm_err_t jit_wasm_opcode(spidir_builder_handle_t builder, buffer_t* code, jit_
     wasm_err_t err = WASM_NO_ERROR;
 
     uint8_t opcode = BUFFER_PULL(uint8_t, code);
+
+    // if the block is terminated we need to skip all the opcodes until we reach the 
+    // `end` opcode, dead-code is considered valid wasm and should just be skipped, 
+    // it also doesn't perform any validations like stack manipulation.
+    if (label->terminated) {
+        RETHROW(jit_skip_unreachable(builder, code, ctx, func, label, opcode));
+        goto cleanup;
+    }
+
     switch (opcode) {
         // End instruction
         case 0x0B: RETHROW(jit_wasm_end(builder, code, ctx, func, label)); break;
