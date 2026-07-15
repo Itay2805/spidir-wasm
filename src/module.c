@@ -143,7 +143,7 @@ static wasm_err_t wasm_pull_result_type(buffer_t* buffer, wasm_value_type_t** ou
     wasm_value_type_t* types = nullptr;
 
     uint32_t count = BUFFER_PULL_U32(buffer);
-    CHECK(count < buffer->len);
+    CHECK(count <= buffer->len);
     types = CALLOC(wasm_value_type_t, count);
     CHECK(types != nullptr);
     *out_count = count;
@@ -200,7 +200,7 @@ static wasm_err_t wasm_parse_import_section(wasm_module_t* module, buffer_t* buf
     char* item_name = nullptr;
 
     uint32_t count = BUFFER_PULL_U32(buffer);
-    CHECK(count < buffer->len);
+    CHECK(count <= buffer->len);
     module->imports = CALLOC(wasm_import_t, count);
     CHECK(module->imports != nullptr);
     module->imports_count = count;
@@ -264,7 +264,7 @@ static wasm_err_t wasm_parse_function_section(wasm_module_t* module, buffer_t* b
     wasm_err_t err = WASM_NO_ERROR;
 
     uint32_t count = BUFFER_PULL_U32(buffer);
-    CHECK(count < buffer->len);
+    CHECK(count <= buffer->len);
     module->functions = CALLOC(typeidx_t, count);
     CHECK(module->functions != nullptr);
     module->functions_count = count;
@@ -366,7 +366,7 @@ wasm_err_t wasm_parse_global_section(wasm_module_t* module, buffer_t* buffer) {
     wasm_err_t err = WASM_NO_ERROR;
 
     uint32_t count = BUFFER_PULL_U32(buffer);
-    CHECK(count < buffer->len);
+    CHECK(count <= buffer->len);
     module->globals = CALLOC(wasm_global_t, count);
     CHECK(module->globals != nullptr);
     module->globals_count = count;
@@ -400,7 +400,7 @@ static wasm_err_t wasm_parse_table_section(wasm_module_t* module, buffer_t* buff
     wasm_err_t err = WASM_NO_ERROR;
 
     uint32_t count = BUFFER_PULL_U32(buffer);
-    CHECK(count < buffer->len);
+    CHECK(count <= buffer->len);
     module->tables = CALLOC(wasm_table_t, count);
     CHECK(module->tables != nullptr);
     module->tables_count = count;
@@ -440,7 +440,7 @@ static wasm_err_t wasm_parse_element_section(wasm_module_t* module, buffer_t* bu
     uint32_t* funcs = nullptr;
 
     uint32_t count = BUFFER_PULL_U32(buffer);
-    CHECK(count < buffer->len);
+    CHECK(count <= buffer->len);
     module->elems = CALLOC(wasm_elem_segment_t, count);
     CHECK(module->elems != nullptr);
     module->elems_count = count;
@@ -492,7 +492,7 @@ static wasm_err_t wasm_parse_data_section(wasm_module_t* module, buffer_t* buffe
     void* data = nullptr;
 
     uint32_t count = BUFFER_PULL_U32(buffer);
-    CHECK(count < buffer->len);
+    CHECK(count <= buffer->len);
     module->data = CALLOC(wasm_data_t, count);
     CHECK(module->data != nullptr);
     module->data_count = count;
@@ -560,7 +560,7 @@ static wasm_err_t wasm_parse_export_section(wasm_module_t* module, buffer_t* buf
     char* name = nullptr;
 
     uint32_t count = BUFFER_PULL_U32(buffer);
-    CHECK(count < buffer->len);
+    CHECK(count <= buffer->len);
     module->exports = CALLOC(wasm_export_t, count);
     CHECK(module->exports != nullptr);
     module->exports_count = count;
